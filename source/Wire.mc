@@ -18,7 +18,7 @@ module Wire {
         var options = {
             :method => request.method,
             :headers => headers,
-            // the answers that carry no body (204) are not parsed as JSON
+            // DELETE and dismiss are not read: their answer is not parsed as JSON
             :responseType => request.json ? Communications.HTTP_RESPONSE_CONTENT_TYPE_JSON : Communications.HTTP_RESPONSE_CONTENT_TYPE_TEXT_PLAIN
         };
         Communications.makeWebRequest(ServerConfig.url() + request.path, body, options, callback);

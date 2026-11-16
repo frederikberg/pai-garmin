@@ -66,12 +66,12 @@ Bun.serve({
     }
     if (path === '/api/watch/alarm/dismiss' && req.method === 'POST') {
       ringing = []
-      return new Response(null, { status: 204 })
+      return json({})
     }
     const one = path.match(/^\/api\/watch\/alarm\/([^/]+)$/)
     if (one && req.method === 'DELETE') {
       alarms = alarms.filter((a) => a.id !== one[1])
-      return new Response(null, { status: 204 })
+      return json({})
     }
     if (one && req.method === 'PUT') {
       const alarm = alarms.find((a) => a.id === one[1])

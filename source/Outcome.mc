@@ -100,7 +100,7 @@ class Outcome {
     }
 
     // responseCode is the HTTP status, or a negative Connect IQ transport error. expectsBody is false
-    // for the routes that answer 204: the simulator reports such an empty answer as -400, so the
+    // for DELETE and dismiss, whose answer is not read: the simulator reports an empty 204 as -400, so the
     // call counts as sent and whoever asked reads the state again.
     static function fromResponse(responseCode as Number, data as Dictionary or String or Null, expectsBody as Boolean) as Outcome {
         if (responseCode == 401) {
