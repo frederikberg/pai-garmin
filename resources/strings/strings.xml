@@ -1,0 +1,7 @@
+<strings>
+    <string id="AppName">PAI</string>
+    <string id="ServerUrlTitle">Server URL</string>
+    <string id="ServerUrlPrompt">The address of your PAI Cloud server, for example https://pai.example.com</string>
+    <string id="WatchKeyTitle">Watch key</string>
+    <string id="WatchKeyPrompt">A watch key created in PAI Cloud under Settings, Watch keys</string>
+</strings>
