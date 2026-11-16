@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# Writes config/properties.xml, the default settings of a local build (local.jungle), and is not tracked.
+#
+#   PAI_URL=https://pai.example.com PAI_WATCH_KEY=<key> ./configure
+set -euo pipefail
+
+: "${PAI_URL:?set PAI_URL to the base URL of the server}"
+: "${PAI_WATCH_KEY:?set PAI_WATCH_KEY to a watch key from the server}"
+
+[[ $PAI_URL =~ ^https?://[A-Za-z0-9._~:/%-]+$ ]] || { echo "PAI_URL is not a plain http(s) URL" >&2; exit 1; }
+[[ $PAI_WATCH_KEY =~ ^[A-Za-z0-9._~+/=-]+$ ]] || { echo "PAI_WATCH_KEY has characters outside A-Za-z0-9._~+/=-" >&2; exit 1; }
+
+target="$(dirname "$0")/config/properties.xml"
+mkdir -p "$(dirname "$target")"
+umask 077
+cat > "$target" <<XML
+<properties>
+    <property id="serverUrl" type="string">$PAI_URL</property>
+    <property id="watchKey" type="string">$PAI_WATCH_KEY</property>
+</properties>
+XML
+echo "wrote $target"

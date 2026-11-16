@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  products:
+    runs-on: ubuntu-latest
+    outputs:
+      devices: ${{ steps.list.outputs.devices }}
+    steps:
+      - uses: actions/checkout@v7
+      - id: list
+        # the manifest is the one list of supported devices
+        run: |
+          devices=$(grep -o 'iq:product id="[^"]*"' manifest.xml | sed 's/.*id="//; s/"$//' | jq -R . | jq -sc .)
+          echo "devices=$devices" >> "$GITHUB_OUTPUT"
+
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: scripts/check-docs.sh
+
+  test:
+    needs: products
+    runs-on: ubuntu-26.04
+    strategy:
+      fail-fast: false
+      matrix:
+        device: ${{ fromJSON(needs.products.outputs.devices) }}
+    steps:
+      - uses: actions/checkout@v7
+      # Compiles with a throwaway key and strict type checking, then runs the unit tests in the simulator.
+      - uses: matco/action-connectiq-tester@60fd2e8179994e075d3a58c6250f32aa20e2b37b # v1
+        with:
+          device: ${{ matrix.device }}
+
+  gate:
+    needs: [products, docs, test]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "results: $RESULTS"
+          case " $RESULTS " in *" failure "*|*" cancelled "*) exit 1 ;; esac
