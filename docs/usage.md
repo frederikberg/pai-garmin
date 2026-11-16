@@ -12,13 +12,13 @@ From the glance list: the glance shows the next alarm (or that one rings), and S
 
 When the app opens it asks the server what is going on:
 
-- **An alarm is ringing:** the screen shows its time and name. Start stops every ringing alarm and goes on to the menu.
+- **An alarm is ringing:** opening the app stops every ringing alarm by itself. The screen shows its time and name, "Stopping..." and then "Alarm stopped"; Start goes on to the menu. If stopping fails, the screen says why and Start tries again. The glance only shows that an alarm rings; it never stops it.
 - **Otherwise** the menu: *Weather* (first, selected) and *Alarm*. Start opens the screen you chose.
 
 Back leaves a screen; Back on the first one exits the app.
 
 <p align="center">
-  <img src="images/ringing.png" alt="A ringing alarm at 14:39 with the hint Enter: stop" width="30%">
+  <img src="images/ringing.png" alt="The screen after a ringing alarm was stopped: Alarm stopped, 14:39, Alarm, with the hint Enter: menu" width="30%">
   <img src="images/home.png" alt="The menu with Weather selected and Alarm below it" width="30%">
 </p>
 
@@ -52,11 +52,11 @@ The Alarm screen lists *+ New* first, then the armed alarms, soonest first, each
 | time entry | Start | from hours to minutes, then save |
 | time entry | Back | from minutes to hours, then cancel |
 
-An alarm has no name and rings once, at the next time the clock shows the chosen hour and minute. The time entry starts at the next full hour for a new alarm and at the alarm's own time for a change. After saving, the list is read from the server again and the saved alarm is selected, so the list always shows what the server holds, including alarms made on other devices.
+An alarm has no name and rings once, at the next time the clock shows the chosen hour and minute. The time entry starts at the current time for a new alarm and at the alarm's own time for a change, and shows the current time underneath while you pick. Setting a new alarm to the minute it is now means tomorrow. After saving, the list is read from the server again and the saved alarm is selected, so the list always shows what the server holds, including alarms made on other devices.
 
 <p align="center">
   <img src="images/alarms.png" alt="The alarm list with + New above two alarms, one selected, and the hint Hold Up: delete" width="30%">
-  <img src="images/new-alarm.png" alt="The time entry for a new alarm showing 15:00 with the hours marked" width="30%">
+  <img src="images/new-alarm.png" alt="The time entry for a new alarm showing 15:00, the current time 15:00 underneath and the hours marked" width="30%">
 </p>
 
 ## When something is wrong

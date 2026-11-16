@@ -13,7 +13,7 @@ A Garmin watch app for your PAI Cloud server: see whether it will rain, and set,
 [![CI](https://github.com/frederikberg/pai-garmin/actions/workflows/ci.yml/badge.svg)](https://github.com/frederikberg/pai-garmin/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-Open it from the glance list. If an alarm rings, one press stops it. Otherwise a small menu opens on the weather (the chance of rain now and later, in two rows); the alarms are one entry below: pick an hour and a minute, press Start, done. What you set on the watch shows up on your phone and in the web app, and the other way round.
+Open it from the glance list. If an alarm rings, opening the app stops it. Otherwise a small menu opens on the weather (the chance of rain now and later, in two rows); the alarms are one entry below: pick an hour and a minute, press Start, done. What you set on the watch shows up on your phone and in the web app, and the other way round.
 
 <p align="center">
   <img src="docs/images/overview.png" alt="The watch app: the weather, a ringing alarm, the alarm list and the time entry" width="100%">
@@ -21,7 +21,7 @@ Open it from the glance list. If an alarm rings, one press stops it. Otherwise a
 
 ## Why
 
-- **One press to stop.** An alarm that is ringing is the first thing the app shows, and Start stops all of them, so the phone stops pushing too.
+- **Opening it stops the alarm.** An alarm that is ringing is stopped the moment the app opens, with no press, so the phone stops pushing too; the screen says it was stopped.
 - **Built for buttons.** Every step works with the physical buttons alone; the time entry is hours, then minutes, then save.
 - **Your server, not a cloud account.** The app talks only to the PAI Cloud server you enter in its settings.
 

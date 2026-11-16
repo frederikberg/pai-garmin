@@ -88,8 +88,8 @@ class AlarmListView extends WatchUi.View {
                 reload();
             }
         } else if (_selected == 0) {
-            var next = (AlarmTime.hour(Time.now()) + 1) % 24;
-            TimeEntryView.open("New alarm", next, 0, method(:onCreatePicked));
+            var now = Time.now();
+            TimeEntryView.open("New alarm", AlarmTime.hour(now), AlarmTime.minute(now), method(:onCreatePicked));
         } else {
             var alarm = _alarms[_selected - 1];
             _editing = alarm;

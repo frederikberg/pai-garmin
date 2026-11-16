@@ -1,5 +1,6 @@
 import Toybox.Graphics;
 import Toybox.Lang;
+import Toybox.Time;
 import Toybox.Timer;
 import Toybox.WatchUi;
 
@@ -57,6 +58,9 @@ class TimeEntryView extends WatchUi.View {
         dc.drawText(x - gap, y, font, _hour.format("%02d"), justify);
         dc.setColor(_onMinute ? Graphics.COLOR_WHITE : Graphics.COLOR_DK_GRAY, Graphics.COLOR_TRANSPARENT);
         dc.drawText(x + gap, y, font, _minute.format("%02d"), justify);
+        // the clock while picking, so the number can be set against it
+        dc.setColor(Graphics.COLOR_LT_GRAY, Graphics.COLOR_TRANSPARENT);
+        dc.drawText(x, dc.getHeight() * 72 / 100, Graphics.FONT_XTINY, "Now " + AlarmTime.hhmm(Time.now()), justify);
         Draw.hint(dc, _onMinute ? "Enter: save" : "Enter: minutes");
     }
 
