@@ -16,6 +16,10 @@ class MessageView extends WatchUi.View {
         _title = title;
     }
 
+    function setTitle(title as String) as Void {
+        _title = title;
+    }
+
     function show(headline as String?, text as String, hint as String?, onSelect as Method() as Void or Null) as Void {
         _headline = headline;
         _text = text;
