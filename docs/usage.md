@@ -32,7 +32,7 @@ The Alarm screen lists *+ New* first, then the armed alarms, soonest first, each
 | list, on *+ New* | Start | create an alarm |
 | list, on an alarm | Start | change its time |
 | list, on an alarm | hold Up | open its menu, whose only entry deletes it |
-| time entry | Up / Down | add / subtract one to the marked number, wrapping |
+| time entry | Up / Down | add / subtract one to the marked number, wrapping; held, it repeats and speeds up |
 | time entry | Start | from hours to minutes, then save |
 | time entry | Back | from minutes to hours, then cancel |
 
