@@ -88,6 +88,8 @@ class Outcome {
     // a local code (not_set_up, no_phone, timeout, send_failed) or http_<status>
     var code as String? = null;
     var state as AlarmState? = null;
+    // the parsed JSON object of a successful answer, for screens that read other routes
+    var data as Dictionary? = null;
 
     function initialize(kind as Number) {
         self.kind = kind;
@@ -117,6 +119,7 @@ class Outcome {
         }
         var o = new Outcome(OK);
         if (data instanceof Dictionary) {
+            o.data = data;
             o.state = AlarmState.fromData(data);
         }
         return o;
@@ -129,14 +132,14 @@ class Outcome {
     // What the screen says about a failure.
     function text() as String {
         if (kind == REJECTED) {
-            return "Watch key rejected";
+            return "Watch key rejected. Check it in the Garmin Connect app";
         }
         var c = code;
         if ("not_set_up".equals(c)) {
             return "Set the server URL and watch key in the Garmin Connect app";
         }
         if ("no_phone".equals(c)) {
-            return "Phone not connected";
+            return "Phone not connected. Connect it and try again";
         }
         if ("timeout".equals(c)) {
             return "The server did not answer";

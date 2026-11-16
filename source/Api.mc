@@ -21,9 +21,14 @@ class Request {
 (:glance)
 module Api {
     const ALARM = "/api/watch/alarm";
+    const WEATHER = "/api/watch/weather";
 
     function alarms() as Request {
         return new Request(Communications.HTTP_REQUEST_METHOD_GET, ALARM, null, true);
+    }
+
+    function weather() as Request {
+        return new Request(Communications.HTTP_REQUEST_METHOD_GET, WEATHER, null, true);
     }
 
     function create(fireAt as Time.Moment) as Request {
