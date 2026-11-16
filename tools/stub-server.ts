@@ -73,7 +73,7 @@ Bun.serve({
       alarms = alarms.filter((a) => a.id !== one[1])
       return new Response(null, { status: 204 })
     }
-    if (one && req.method === 'PATCH') {
+    if (one && req.method === 'PUT') {
       const alarm = alarms.find((a) => a.id === one[1])
       if (!alarm) return json({ detail: 'not found' }, 404)
       const body = (await req.json().catch(() => ({}))) as { fire_at?: string }
