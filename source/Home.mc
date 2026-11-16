@@ -18,9 +18,8 @@ class HomeDelegate extends WatchUi.Menu2InputDelegate {
 
     function onSelect(item as WatchUi.MenuItem) as Void {
         if (item.getId() == :weather) {
-            var view = new MessageView("Weather");
-            view.show(null, "Coming soon", null, null);
-            WatchUi.pushView(view, new MessageDelegate(view), WatchUi.SLIDE_LEFT);
+            var view = new WeatherView();
+            WatchUi.pushView(view, new WeatherDelegate(view), WatchUi.SLIDE_LEFT);
         } else {
             var list = new AlarmListView();
             WatchUi.pushView(list, new AlarmListDelegate(list), WatchUi.SLIDE_LEFT);

@@ -5,7 +5,7 @@
 </td>
 <td>
 <h1>pai-garmin</h1>
-A Garmin watch app for your PAI Cloud server: set, change, delete and stop alarms from the wrist.
+A Garmin watch app for your PAI Cloud server: see whether it will rain, and set, change, delete and stop alarms from the wrist.
 </td>
 </tr>
 </table>
@@ -13,10 +13,10 @@ A Garmin watch app for your PAI Cloud server: set, change, delete and stop alarm
 [![CI](https://github.com/frederikberg/pai-garmin/actions/workflows/ci.yml/badge.svg)](https://github.com/frederikberg/pai-garmin/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-Open it from the glance list. If an alarm rings, one press stops it. Otherwise a small menu leads to the alarms: pick an hour and a minute, press Start, done. What you set on the watch shows up on your phone and in the web app, and the other way round.
+Open it from the glance list. If an alarm rings, one press stops it. Otherwise a small menu opens on the weather (the chance of rain now and later, in two rows); the alarms are one entry below: pick an hour and a minute, press Start, done. What you set on the watch shows up on your phone and in the web app, and the other way round.
 
 <p align="center">
-  <img src="docs/images/overview.png" alt="The watch app: a ringing alarm, the menu, the alarm list and the time entry" width="100%">
+  <img src="docs/images/overview.png" alt="The watch app: the weather, a ringing alarm, the alarm list and the time entry" width="100%">
 </p>
 
 ## Why
@@ -54,8 +54,8 @@ monkeyc -f local.jungle -d fenix8solar47mm -o bin/pai-garmin.prg -y developer_ke
 
 ## Develop
 
-- Unit tests: `monkeyc -f monkey.jungle -d fenix8solar47mm -o bin/test.prg -y developer_key.der -t`, then `monkeydo bin/test.prg fenix8solar47mm -t` with the simulator running. They cover the alarm time arithmetic, response parsing and the settings.
-- `tools/stub-server.ts` ([Bun](https://bun.sh)) stands in for the server: `WATCH_KEY=<key> SCENARIO=alarms bun tools/stub-server.ts`. Scenarios: `alarms`, `empty`, `ringing`, `rejected`, switchable while running with `GET /__stub/scenario?name=<scenario>`. Point `./configure` at it (from the simulator the host is usually `172.17.0.1`, and a plain `http://` address needs *Settings > Use Device HTTPS Requirements* off).
+- Unit tests: `monkeyc -f monkey.jungle -d fenix8solar47mm -o bin/test.prg -y developer_key.der -t`, then `monkeydo bin/test.prg fenix8solar47mm -t` with the simulator running. They cover the alarm time arithmetic, response parsing, the weather wording and the settings.
+- `tools/stub-server.ts` ([Bun](https://bun.sh)) stands in for the server: `WATCH_KEY=<key> SCENARIO=alarms bun tools/stub-server.ts`. Scenarios: `alarms`, `empty`, `ringing`, `rejected`, switchable while running with `GET /__stub/scenario?name=<scenario>`; the weather answer has its own (`WEATHER=<name>`, `GET /__stub/weather?name=<name>`, names in the stub's header). Point `./configure` at it (from the simulator the host is usually `172.17.0.1`, and a plain `http://` address needs *Settings > Use Device HTTPS Requirements* off).
 - A build with a glance view starts the simulator in glance mode. `preview.jungle` is a local build without the glance, so the simulator opens the app itself.
 - CI (`.github/workflows/ci.yml`) compiles with a throwaway key and runs the tests for every product in the manifest.
 
@@ -66,7 +66,7 @@ monkeyc -f local.jungle -d fenix8solar47mm -o bin/pai-garmin.prg -y developer_ke
 
 ## Known limitations
 
-- Weather is a placeholder; the app shows "Coming soon" there.
+- Weather has no glance and no background refresh: it asks the server when you open it and when you press Start.
 - Alarms ring once. There is no repeat, no name and no snooze on the watch.
 - The watch never rings or vibrates by itself: the server sends the alarm to your phone, and the watch only shows and stops it.
 - Times are shown on a 24 hour clock.

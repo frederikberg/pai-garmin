@@ -7,6 +7,7 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 ### Added
 
 - The Alarm sub-app: create, edit and delete one-off alarms from the watch, and stop a ringing alarm with one press.
-- A home menu with Weather (a placeholder for now) and Alarm.
+- The Weather sub-app: the chance of rain in the next hour and the next twelve, coloured by verdict, with place and location age. Start refreshes.
+- A home menu with Weather and Alarm.
 - A glance that shows the next alarm, or that one rings.
 - Server URL and watch key as app settings in Garmin Connect.

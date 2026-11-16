@@ -13,7 +13,7 @@ From the glance list: the glance shows the next alarm (or that one rings), and S
 When the app opens it asks the server what is going on:
 
 - **An alarm is ringing:** the screen shows its time and name. Start stops every ringing alarm and goes on to the menu.
-- **Otherwise** the menu: *Weather* (first, selected) and *Alarm*. Weather is a placeholder that says "Coming soon".
+- **Otherwise** the menu: *Weather* (first, selected) and *Alarm*. Start opens the screen you chose.
 
 Back leaves a screen; Back on the first one exits the app.
 
@@ -21,6 +21,22 @@ Back leaves a screen; Back on the first one exits the app.
   <img src="images/ringing.png" alt="A ringing alarm at 14:39 with the hint Enter: stop" width="30%">
   <img src="images/home.png" alt="The menu with Weather selected and Alarm below it" width="30%">
 </p>
+
+## Weather
+
+Start on *Weather* asks the server once and shows two rows:
+
+- **Now** is the chance of rain in the next hour, from the rain radar. When rain is on its way the time it reaches you follows, with a line below such as "8 km W, closing in"; "raining now, until 15:40" while it rains; "dry around you" when nothing is near. Where no radar covers the place the line says "forecast only".
+- **Later** is the chance over the next twelve hours and, if rain is likely, when it starts.
+
+The colour follows the server's verdict: blue for rain, yellow for maybe, green for unlikely or dry, grey when there is no answer. The line under the rows names the place and how long ago the phone reported it. Start asks again, Back returns to the menu.
+
+<p align="center">
+  <img src="images/weather.png" alt="Weather: Now 70 % with rain 8 km west closing in, Later 40 % with rain possible, Aachen, 12 minutes ago" width="30%">
+  <img src="images/weather-unknown.png" alt="Weather without a location: pick your iPhone in PAI Settings, Location" width="30%">
+</p>
+
+Without a location the screen says to pick your iPhone in PAI Settings, Location. If the weather source is down it says to try again, and a rejected key, a missing phone connection or a server error are worded like on the other screens.
 
 ## Alarms
 
