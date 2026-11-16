@@ -10,8 +10,8 @@ class PaiApp extends Application.AppBase {
 
     (:typecheck(disableGlanceCheck))
     function getInitialView() as [WatchUi.Views] or [WatchUi.Views, WatchUi.InputDelegates] {
-        var view = new StartView();
-        return [view, new MessageDelegate(view)];
+        Gate.start();
+        return Home.create();
     }
 
     (:glanceView)
