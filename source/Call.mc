@@ -17,7 +17,26 @@ class Call {
         _callback = callback;
     }
 
+    // Goes out once the check made at launch is over (Gate); until then the call waits.
     function send(request as Request) as Void {
+        _request = request;
+        if (Gate.open) {
+            sendNow(request);
+        } else {
+            Gate.waiting.add(self);
+        }
+    }
+
+    // Called by Gate when the wait is over.
+    function release() as Void {
+        var request = _request;
+        if (request != null) {
+            sendNow(request);
+        }
+    }
+
+    // Goes out at once, past the gate: the check itself and the dismiss it triggers.
+    function sendNow(request as Request) as Void {
         _request = request;
         if (!ServerConfig.isSet()) {
             finish(Outcome.failed("not_set_up"));
@@ -35,6 +54,7 @@ class Call {
 
     function cancel() as Void {
         _open = false;
+        Gate.waiting.remove(self);
         _timer.stop();
     }
 

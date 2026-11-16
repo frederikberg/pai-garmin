@@ -10,10 +10,9 @@ The key travels through Garmin's app settings, so revoke it on the server if you
 
 From the glance list: the glance shows the next alarm (or that one rings), and Start opens the app. From the app list the app works the same way.
 
-When the app opens it asks the server what is going on:
+The menu comes first and appears at once, without waiting for the network: *Weather* (selected) and *Alarm*. Start opens the screen you chose, and only then does anything go to the server.
 
-- **An alarm is ringing:** opening the app stops every ringing alarm by itself. The screen shows its time and name, "Stopping..." and then "Alarm stopped"; Start goes on to the menu. If stopping fails, the screen says why and Start tries again. The glance only shows that an alarm rings; it never stops it.
-- **Otherwise** the menu: *Weather* (first, selected) and *Alarm*. Start opens the screen you chose.
+Right after the app opens it also checks, in the background, whether an alarm rings. The check goes out first, so a screen opened in the meantime shows "Loading..." for a moment and its request follows once the check is over. If nothing rings, the check is invisible. If an alarm rings, the app stops every ringing alarm by itself, drops whatever you had just opened and shows the alarm's time and name with "Stopping..." and then "Alarm stopped"; Start returns to the menu. If stopping fails, the screen says why and Start tries again. The glance only shows that an alarm rings; it never stops it.
 
 Back leaves a screen; Back on the first one exits the app.
 

@@ -1,13 +1,14 @@
 import Toybox.Lang;
 import Toybox.WatchUi;
 
-// The menu of sub-apps. Weather comes first and is the focused entry.
+// The menu of sub-apps, the first screen. Weather comes first and is the focused entry. It needs no
+// request: nothing goes to the server until a sub-app is chosen.
 module Home {
-    function open() as Void {
+    function create() as [WatchUi.Menu2, WatchUi.Menu2InputDelegate] {
         var menu = new WatchUi.Menu2({:title => "PAI"});
         menu.addItem(new WatchUi.MenuItem("Weather", null, :weather, null));
         menu.addItem(new WatchUi.MenuItem("Alarm", null, :alarm, null));
-        WatchUi.switchToView(menu, new HomeDelegate(), WatchUi.SLIDE_IMMEDIATE);
+        return [menu, new HomeDelegate()];
     }
 }
 

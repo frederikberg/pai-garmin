@@ -1,7 +1,7 @@
 import Toybox.Lang;
 import Toybox.WatchUi;
 
-// A ringing alarm. Showing it stops every ringing alarm at once; Enter then goes on to the menu.
+// A ringing alarm. Showing it stops every ringing alarm at once; Enter then goes back to the menu.
 // Only the app does this: the glance just reports that an alarm rings.
 class RingingView extends MessageView {
     private var _started as Boolean = false;
@@ -25,7 +25,7 @@ class RingingView extends MessageView {
     }
 
     function dismiss() as Void {
-        new Call(method(:onDismissed)).send(Api.dismissAll());
+        new Call(method(:onDismissed)).sendNow(Api.dismissAll());
     }
 
     function onDismissed(outcome as Outcome) as Void {
@@ -39,7 +39,7 @@ class RingingView extends MessageView {
     }
 
     function menu() as Void {
-        Home.open();
+        WatchUi.popView(WatchUi.SLIDE_IMMEDIATE);
     }
 
     function retry() as Void {

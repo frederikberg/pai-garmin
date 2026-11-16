@@ -19,6 +19,9 @@ let scenario = process.env.SCENARIO ?? 'alarms'
 
 type Alarm = { id: string; name: string; fire_at: string; created_at: string; source: string }
 
+// Milliseconds the stub waits before answering GET /api/watch/alarm (a slow link); switch it on
+// GET /__stub/delay?ms=<ms>.
+let alarmDelayMs = Number(process.env.ALARM_DELAY_MS ?? 0)
 let weather = process.env.WEATHER ?? 'rain_soon'
 
 type Half = Record<string, unknown>
@@ -93,6 +96,10 @@ Bun.serve({
       reset(url.searchParams.get('name') ?? 'alarms')
       return json({ scenario })
     }
+    if (path === '/__stub/delay') {
+      alarmDelayMs = Number(url.searchParams.get('ms') ?? 0)
+      return json({ alarmDelayMs })
+    }
     if (path === '/__stub/weather') {
       weather = url.searchParams.get('name') ?? 'rain_soon'
       return json({ weather })
@@ -107,6 +114,7 @@ Bun.serve({
       return json(weatherAnswer(weather))
     }
     if (path === '/api/watch/alarm' && req.method === 'GET') {
+      if (alarmDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, alarmDelayMs))
       return json({ alarms: sorted(), ringing, server_time: new Date().toISOString() })
     }
     if (path === '/api/watch/alarm' && req.method === 'POST') {
