@@ -30,6 +30,10 @@ module Api {
         return new Request(Communications.HTTP_REQUEST_METHOD_POST, ALARM, {"fire_at" => AlarmTime.toIso(fireAt)}, true);
     }
 
+    function update(id as String, fireAt as Time.Moment) as Request {
+        return new Request(Communications.HTTP_REQUEST_METHOD_PUT, ALARM + "/" + id, {"fire_at" => AlarmTime.toIso(fireAt)}, true);
+    }
+
     function remove(id as String) as Request {
         return new Request(Communications.HTTP_REQUEST_METHOD_DELETE, ALARM + "/" + id, null, false);
     }

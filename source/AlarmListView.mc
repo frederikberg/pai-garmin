@@ -18,8 +18,6 @@ class AlarmListView extends WatchUi.View {
     private var _editing as Alarm? = null;
     // fire time (epoch seconds) of the alarm just saved: the list selects it once it is loaded
     private var _focusAt as Number? = null;
-    // the alarm an edit replaces once its successor is saved
-    private var _replaced as Alarm? = null;
 
     function initialize() {
         View.initialize();
@@ -115,35 +113,22 @@ class AlarmListView extends WatchUi.View {
     }
 
     function onCreatePicked(hour as Number, minute as Number) as Void {
-        _replaced = null;
-        save(hour, minute);
-    }
-
-    // The server has no edit the watch can call, so an edit saves the new time first and then
-    // deletes the old alarm: a failure in between leaves a duplicate, never a lost alarm.
-    function onEditPicked(hour as Number, minute as Number) as Void {
-        _replaced = _editing;
-        save(hour, minute);
-    }
-
-    private function save(hour as Number, minute as Number) as Void {
         var at = AlarmTime.nextOccurrence(Time.now(), hour, minute);
         _focusAt = at.value();
-        begin("Saving...", Api.create(at), method(:onSaved));
+        begin("Saving...", Api.create(at), method(:onChanged));
+    }
+
+    function onEditPicked(hour as Number, minute as Number) as Void {
+        var alarm = _editing;
+        if (alarm != null) {
+            var at = AlarmTime.nextOccurrence(Time.now(), hour, minute);
+            _focusAt = at.value();
+            begin("Saving...", Api.update(alarm.id, at), method(:onChanged));
+        }
     }
 
     function remove(alarm as Alarm) as Void {
         begin("Deleting...", Api.remove(alarm.id), method(:onChanged));
-    }
-
-    function onSaved(outcome as Outcome) as Void {
-        var old = _replaced;
-        _replaced = null;
-        if (outcome.isOk() && old != null) {
-            begin("Saving...", Api.remove(old.id), method(:onChanged));
-        } else {
-            onChanged(outcome);
-        }
     }
 
     function onChanged(outcome as Outcome) as Void {

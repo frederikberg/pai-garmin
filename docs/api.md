@@ -8,6 +8,7 @@ Times are ISO 8601 in UTC with an offset, for example `2026-11-16T07:30:00+00:00
 |---|---|---|
 | `GET /api/watch/alarm` | none | `200` with the state below |
 | `POST /api/watch/alarm` | `{"fire_at": "<time>"}` | `201` with the new alarm |
+| `PUT /api/watch/alarm/{id}` | `{"fire_at": "<time>"}` | `200` with the changed alarm; `404` for an unknown id, `409` while it rings |
 | `DELETE /api/watch/alarm/{id}` | none | `204` |
 | `POST /api/watch/alarm/dismiss` | none | `204`, stops every ringing alarm |
 
@@ -23,6 +24,6 @@ State:
 
 `alarms` holds the armed alarms by fire time, soonest first; `ringing` the ones sounding now. Entries may carry more fields, which the watch ignores.
 
-Connect IQ cannot send `PATCH`, so changing an alarm's time is a `POST` of the new time followed by a `DELETE` of the old alarm. A failure in between leaves both alarms, never none.
+Changing a time is a `PUT` because Connect IQ cannot send `PATCH`.
 
 The routes that answer `204` have no body. The simulator reports such an answer as an error (`-400`), so the app treats that code as "sent" for these routes and reads the state again afterwards.
