@@ -1,5 +1,7 @@
 import Toybox.Graphics;
 import Toybox.Lang;
+import Toybox.Math;
+import Toybox.System;
 import Toybox.WatchUi;
 
 // Text placement shared by the screens, as fractions of the screen so every round display fits.
@@ -37,5 +39,25 @@ module Draw {
             :justification => Graphics.TEXT_JUSTIFY_CENTER
         });
         area.draw(dc);
+    }
+
+    // How wide a line of text centred on cy can be without touching the edge of the screen.
+    function widthAt(dc as Graphics.Dc, cy as Number, lineHeight as Number) as Number {
+        var round = System.getDeviceSettings().screenShape == System.SCREEN_SHAPE_ROUND;
+        return chord(dc.getWidth(), dc.getHeight(), round, cy, lineHeight);
+    }
+
+    // On a round screen the narrower of the line's top and bottom chord, less a small margin.
+    function chord(width as Number, height as Number, round as Boolean, cy as Number, lineHeight as Number) as Number {
+        var margin = width * 6 / 100;
+        if (!round) {
+            return width - 2 * margin;
+        }
+        var r = width / 2.0;
+        var dy = (cy - height / 2.0).abs() + lineHeight / 2.0;
+        if (dy >= r) {
+            return 0;
+        }
+        return (2 * Math.sqrt(r * r - dy * dy)).toNumber() - 2 * margin;
     }
 }

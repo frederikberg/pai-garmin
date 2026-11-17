@@ -85,3 +85,36 @@ function ageIsWordedByUnit(logger as Logger) as Boolean {
 function anAnswerWithoutTheHalvesIsRejected(logger as Logger) as Boolean {
     return WeatherState.fromData({"now" => {"chance" => 1}}) == null && WeatherState.fromData({}) == null;
 }
+
+(:test)
+function laterNamesTheHeaviestHourAndAmount(logger as Logger) as Boolean {
+    var now = {"chance" => 3, "verdict" => "dry", "raining_now" => false, "method" => "radar"};
+    var later = {"chance" => 100, "verdict" => "rain", "at" => "2023-11-14T22:13:20+00:00", "reason" => null,
+        "heaviest_at" => "2023-11-15T06:00:00+00:00", "total_mm" => 3.6,
+        "hours" => [
+            {"start" => "2023-11-14T22:00:00+00:00", "chance" => 40, "precipitation_mm" => 0.2, "intensity" => "light"},
+            {"start" => "bad", "chance" => 50, "precipitation_mm" => 0.2, "intensity" => "light"},
+            {"start" => "2023-11-14T23:00:00+00:00", "chance" => 95.6, "precipitation_mm" => 2.4, "intensity" => "moderate"}
+        ]};
+    var data = weatherData(now, later, null);
+    data["radar_picture_path"] = "/api/watch/weather/radar.png?t=abc";
+    var state = WeatherState.fromData(data);
+    var light = WeatherState.fromData(weatherData(now, {"chance" => 60, "verdict" => "rain", "heaviest_at" => "2023-11-15T06:00:00+00:00", "total_mm" => 0.36}, null));
+    if (state == null || light == null) {
+        return false;
+    }
+    var hours = state.later.hours;
+    var ok = hours.size() == 2 && hours[1].chance == 96 && hours[1].intensity.equals("moderate");
+    ok = same(logger, WeatherText.laterCaption(state.later), "heaviest " + AlarmTime.hhmm(new Time.Moment(1700028000)) + " · 4 mm") && ok;
+    ok = same(logger, WeatherText.laterCaption(light.later), "heaviest " + AlarmTime.hhmm(new Time.Moment(1700028000)) + " · 0.4 mm") && ok;
+    return ok && "/api/watch/weather/radar.png?t=abc".equals(state.picturePath) && light.picturePath == null;
+}
+
+(:test)
+function textNearTheEdgeOfARoundScreenGetsLessWidth(logger as Logger) as Boolean {
+    var middle = Draw.chord(260, 260, true, 130, 20);
+    var high = Draw.chord(260, 260, true, 40, 20);
+    var square = Draw.chord(260, 260, false, 40, 20);
+    logger.debug("middle " + middle + ", high " + high + ", square " + square);
+    return middle > 200 && high < 170 && high > 100 && square > middle && Draw.chord(260, 260, true, 2, 20) == 0;
+}

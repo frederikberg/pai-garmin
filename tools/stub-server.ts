@@ -11,7 +11,9 @@
 //
 // The weather answer has its own scenario, WEATHER (default rain_soon): rain_soon, raining, dry,
 // forecast_only, later_down (radar answers, the 12 h forecast does not), no_location, source_down,
-// plus key_rejected and server_error, which answer the weather route with 401 and 503.
+// plus key_rejected and server_error, which answer the weather route with 401 and 503. Answers with
+// radar carry a radar picture link, which the stub does not serve: the watch's image requests go
+// through Garmin's image service, which cannot reach a local server.
 // Switch it on GET /__stub/weather?name=<weather scenario>.
 const port = Number(process.env.PORT ?? 8099)
 const key = process.env.WATCH_KEY ?? 'stub-key'
@@ -27,6 +29,18 @@ let weather = process.env.WEATHER ?? 'rain_soon'
 type Half = Record<string, unknown>
 const iso = (minutes: number) => new Date(Date.now() + minutes * 60000).toISOString()
 const downHalf = (reason: string): Half => ({ chance: null, verdict: 'unknown', reason })
+const pictureToken = 'stub-picture'
+
+// Twelve hours from the current one, the chance and amount following one shower peaking at hour peak.
+function hours(peak: number, mm: number) {
+  const first = Math.floor(Date.now() / 3600000) * 3600000
+  return Array.from({ length: 12 }, (_, i) => {
+    const share = Math.max(0, 1 - Math.abs(i - peak) / 3)
+    const amount = Math.round(mm * share * 10) / 10
+    const intensity = amount >= 4 ? 'heavy' : amount >= 1 ? 'moderate' : amount >= 0.1 ? 'light' : 'none'
+    return { start: new Date(first + i * 3600000).toISOString(), chance: Math.round(10 + 90 * share), precipitation_mm: amount, intensity }
+  })
+}
 
 // The contract's answer for the weather scenario, with times relative to now.
 function weatherAnswer(name: string) {
@@ -34,31 +48,42 @@ function weatherAnswer(name: string) {
     chance: 70, verdict: 'rain', raining_now: false, starts_at: iso(20), ends_at: null,
     nearest_km: 8, direction: 'W', trend: 'approaching', method: 'radar', reason: null,
   }
-  const later: Half = { chance: 40, verdict: 'maybe', at: iso(160), method: 'radar+forecast', reason: null }
+  const later: Half = {
+    chance: 100, verdict: 'rain', at: iso(160), method: 'radar+forecast', reason: null,
+    hours: hours(5, 4.5), heaviest_at: iso(300), total_mm: 11.2,
+  }
+  let picture = true
   let location: Record<string, unknown> | null = {
     lat: 50.77, lon: 6.08, place: 'Aachen', recorded_at: iso(-12), accuracy_m: 65, source: 'ios',
   }
   if (name === 'raining') {
     Object.assign(now, { chance: 100, verdict: 'rain', raining_now: true, starts_at: null, ends_at: iso(25), nearest_km: 0, direction: null, trend: null })
-    Object.assign(later, { chance: 65, verdict: 'rain', at: iso(30) })
+    Object.assign(later, { chance: 65, verdict: 'rain', at: iso(30), hours: hours(0, 2), heaviest_at: iso(0), total_mm: 3.4 })
   } else if (name === 'dry') {
     Object.assign(now, { chance: 3, verdict: 'dry', starts_at: null, nearest_km: null, direction: null, trend: null })
-    Object.assign(later, { chance: 6, verdict: 'dry', at: null })
+    Object.assign(later, { chance: 6, verdict: 'dry', at: null, hours: hours(-9, 0), heaviest_at: null, total_mm: null })
   } else if (name === 'forecast_only') {
     Object.assign(now, { chance: 20, verdict: 'unlikely', starts_at: null, nearest_km: null, direction: null, trend: null, method: 'forecast' })
-    Object.assign(later, { chance: 45, verdict: 'maybe', method: 'forecast' })
+    Object.assign(later, { chance: 45, verdict: 'maybe', method: 'forecast', hours: hours(8, 0.6), heaviest_at: iso(480), total_mm: 0.6 })
+    picture = false
     location = { ...location, place: 'Lisbon', recorded_at: iso(-60 * 5) }
   } else if (name === 'later_down') {
     Object.assign(later, downHalf('source_unavailable'))
   } else if (name === 'no_location') {
     location = null
+    picture = false
     Object.assign(now, downHalf('no_location'))
     Object.assign(later, downHalf('no_location'))
   } else if (name === 'source_down') {
     Object.assign(now, downHalf('source_unavailable'))
     Object.assign(later, downHalf('source_unavailable'))
   }
-  return { location, computed_at: iso(0), now, later, attribution: 'Radar: DWD · Forecast: Open-Meteo' }
+  return {
+    location, computed_at: iso(0), now, later,
+    radar_picture_at: picture ? iso(30) : null,
+    radar_picture_path: picture ? `/api/radar-link.png?t=${pictureToken}` : null,
+    attribution: 'Radar: DWD · Forecast: Open-Meteo',
+  }
 }
 
 let alarms: Alarm[] = []
