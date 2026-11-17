@@ -57,16 +57,47 @@ class NowOutlook extends Outlook {
     }
 }
 
+// One hour of the twelve-hour strip.
+class HourBar {
+    var start as Time.Moment;
+    var chance as Number;
+    // none, light, moderate or heavy, from the hour's amount
+    var intensity as String;
+
+    function initialize(start as Time.Moment, chance as Number, intensity as String) {
+        self.start = start;
+        self.chance = chance;
+        self.intensity = intensity;
+    }
+}
+
+// The next twelve hours, with the hour by hour strip, the heaviest hour and the total amount.
+class LaterOutlook extends Outlook {
+    var hours as Array<HourBar>;
+    var heaviestAt as Time.Moment?;
+    var totalMm as Float?;
+
+    function initialize(base as Outlook, hours as Array<HourBar>, heaviestAt as Time.Moment?, totalMm as Float?) {
+        Outlook.initialize(base.chance, base.verdict, base.at, base.reason);
+        self.hours = hours;
+        self.heaviestAt = heaviestAt;
+        self.totalMm = totalMm;
+    }
+}
+
 // The answer of GET /api/watch/weather, as far as the watch shows it.
 class WeatherState {
     var now as NowOutlook;
-    var later as Outlook;
+    var later as LaterOutlook;
     // null when the server has no location for the person
     var place as String?;
     var located as Boolean;
     var recordedAt as Time.Moment?;
+    // the radar picture: a link that works for a few minutes without the key, and when its frame is
+    var picturePath as String?;
+    var pictureAt as Time.Moment?;
 
-    function initialize(now as NowOutlook, later as Outlook, located as Boolean, place as String?, recordedAt as Time.Moment?) {
+    function initialize(now as NowOutlook, later as LaterOutlook, located as Boolean, place as String?, recordedAt as Time.Moment?) {
         self.now = now;
         self.later = later;
         self.located = located;
@@ -92,7 +123,40 @@ class WeatherState {
         var nowOutlook = new NowOutlook(outlook(now, "starts_at"), flag(now["raining_now"] as Object?), moment(now["ends_at"] as Object?),
             number(now["nearest_km"] as Object?), text(now["direction"] as Object?), text(now["trend"] as Object?),
             !"forecast".equals(text(now["method"] as Object?)));
-        return new WeatherState(nowOutlook, outlook(later, "at"), location instanceof Dictionary, place, recordedAt);
+        var laterOutlook = new LaterOutlook(outlook(later, "at"), hours(later["hours"] as Object?), moment(later["heaviest_at"] as Object?),
+            decimal(later["total_mm"] as Object?));
+        var state = new WeatherState(nowOutlook, laterOutlook, location instanceof Dictionary, place, recordedAt);
+        state.picturePath = text(data["radar_picture_path"] as Object?);
+        state.pictureAt = moment(data["radar_picture_at"] as Object?);
+        return state;
+    }
+
+    // An hour missing its start or chance is left out.
+    private static function hours(v as Object?) as Array<HourBar> {
+        var bars = [] as Array<HourBar>;
+        if (!(v instanceof Array)) {
+            return bars;
+        }
+        for (var i = 0; i < v.size(); i++) {
+            var h = v[i] as Object?;
+            if (!(h instanceof Dictionary)) {
+                continue;
+            }
+            var start = moment(h["start"] as Object?);
+            var chance = number(h["chance"] as Object?);
+            var intensity = text(h["intensity"] as Object?);
+            if (start != null && chance != null) {
+                bars.add(new HourBar(start, chance, intensity == null ? "none" : intensity));
+            }
+        }
+        return bars;
+    }
+
+    private static function decimal(v as Object?) as Float? {
+        if (v instanceof Number || v instanceof Float || v instanceof Double) {
+            return v.toFloat();
+        }
+        return null;
     }
 
     // timeKey names where the half keeps the time the rain begins
@@ -161,9 +225,15 @@ module WeatherText {
         return now.radar ? "dry around you" : "forecast only";
     }
 
-    function laterCaption(later as Outlook) as String {
+    // When it rains hardest and how much falls in all, or, without those, how likely rain is.
+    function laterCaption(later as LaterOutlook) as String {
         if (!later.known()) {
             return reasonText(later);
+        }
+        var heaviest = later.heaviestAt;
+        if (!later.verdict.equals("dry") && heaviest != null) {
+            var total = later.totalMm;
+            return "heaviest " + AlarmTime.hhmm(heaviest) + (total != null && total >= 0.1 ? " · " + mm(total) : "");
         }
         if (later.verdict.equals("rain")) {
             return "rain likely";
@@ -206,6 +276,11 @@ module WeatherText {
             return "No location yet. Pick your iPhone in PAI Settings > Location";
         }
         return "The weather source is not answering. Try again in a minute";
+    }
+
+    // Whole millimetres from 2 up, one decimal below.
+    function mm(amount as Float) as String {
+        return (amount >= 2 ? (amount + 0.5).toNumber().toString() : amount.format("%.1f")) + " mm";
     }
 
     function chance(o as Outlook) as String {
