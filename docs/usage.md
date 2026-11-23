@@ -23,7 +23,11 @@ Back leaves a screen; Back on the first one exits the app.
 
 ## Computer
 
-An experiment with talking to the server from the wrist, on watches with audio. Entering the screen gives a short beep and buzz. Start begins recording (at most ten seconds, then it sends by itself), Start again sends the clip and the answer plays; Start during the answer stops it and records again. Up and Down change the volume, hold Up picks the reply format (`wav` or `wav8`, see [api.md](api.md#voice)). The screen lists the capture format (Ogg Opus 16 kHz where the watch can, otherwise WAV 16 kHz), bytes sent, the response code, bytes received, the round trip in milliseconds, the reply format and volume, and free memory.
+Talking to the server from the wrist, on watches with audio. Opening *Computer* starts a call at once. The server's ready tone plays, and then the watch records your turn by itself: a red ring around the screen and the time say the microphone is open. Start sends the turn. While the answer is generated the screen says *Thinking* and shows what the server heard; while it speaks it says *Speaking* and shows the sentences as they come. When the answer has finished playing the watch records the next turn. Start during the answer cuts it off at once and records again. Up and Down change the volume, Back hangs up. Holding Up opens a menu with *New call*, which drops the current call and starts a fresh one.
+
+The line near the bottom shows the volume and the state of the link. When requests fail the watch repeats them with growing waits, keeps what you said (up to about half a minute of speech) while the link is down, carries on with the same call when it returns and opens a new call when the server no longer knows the old one; the line then names what is being repeated and how often. Everything that goes wrong, with the codes Connect IQ reports, is sent to the server's log for the call. If the server ends the call, the screen says why and Start opens a new one. A key that is not the owner's is told that Computer is only for the owner.
+
+Opening the app from the glance list and pressing Up or Down now and then keeps it open.
 
 ## Weather
 
@@ -50,9 +54,10 @@ The Alarm screen lists *+ New* first, then the armed alarms, soonest first, each
 
 | Where | Button | Does |
 |---|---|---|
-| Computer | Start | record, then send; during the answer, record again |
+| Computer | Start | send the turn being recorded; during the answer, cut it and record again |
 | Computer | Up / Down | volume up / down |
-| Computer | hold Up | next reply format |
+| Computer | hold Up | menu with New call |
+| Computer | Back | hang up |
 | list | Down / Up | move through the list |
 | list, on *+ New* | Start | create an alarm |
 | list, on an alarm | Start | change its time |

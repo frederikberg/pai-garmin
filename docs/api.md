@@ -12,7 +12,7 @@ Times are ISO 8601 in UTC with an offset, for example `2026-11-16T07:30:00+00:00
 | `DELETE /api/watch/alarm/{id}` | none | `200` with `{}` |
 | `POST /api/watch/alarm/dismiss` | none | `200` with `{}`, stops every ringing alarm |
 | `GET /api/watch/weather` | none | `200` with the weather below |
-| `POST /api/watch/voice/turn?out=<wav\|wav8>` | the recorded clip, raw | `200` with the reply audio; see Voice |
+| `POST /api/watch/voice/call` and the routes below it | see Computer call | the Computer call |
 
 State:
 
@@ -57,8 +57,33 @@ Changing a time is a `PUT` because Connect IQ cannot send `PATCH`.
 
 The app does not read the answer of `DELETE` and dismiss, only that one came. It also accepts an empty `204`, which the simulator reports as an error (`-400`); the app counts that code as "sent" for these two routes and reads the state again afterwards.
 
-## Voice
+## Computer call
 
-The Computer screen records a clip, posts it and plays the answer. The body is the whole clip as raw bytes, `Content-Type: audio/ogg` for Ogg Opus (16 kHz mono, tried first) or `audio/wav` for 16-bit PCM WAV (16 kHz mono, when the watch cannot capture Opus). The `out` query parameter picks the reply format, `wav` when omitted: `wav` is WAV 16 kHz mono 16-bit, `wav8` the same at 8 kHz. The answer is `200` with `Content-Type: application/octet-stream` and the audio as the body. Failures answer `400` for an empty body, `401` for a bad key, `413` for a clip over 2 MB, `502` when transcription or speech failed and `503` when the server is not set up for it.
+The Computer screen holds one call at a time over plain requests. All routes are under `/api/watch/voice/call`, carry the watch key, and answer JSON unless noted. A repeated request must be safe: the watch repeats a request that failed, or whose answer it never saw, with `try=<n>` appended to the query.
 
-The clip is capped at ten seconds on the watch. The screen lists the capture format, bytes sent, response code, bytes received, round trip in milliseconds and free memory, so the numbers of a turn can be read off the watch.
+| Request | Answer |
+|---|---|
+| `POST /api/watch/voice/call` | `201 {"call": "<id>"}` opens a call; `403 {"detail": "owner_only"}` for a key that is not the owner's |
+| `POST …/call/{id}/audio?turn=<t>&seq=<n>`, `Content-Type: audio/ogg`, body = the next bytes of the turn's Ogg Opus stream | `200 {"next_seq": n+1}`; a repeated `seq` is ignored (`200`); a gap answers `409 {"next_seq": <expected>}` |
+| `POST …/call/{id}/command` `{"action": "press", "press": <n>}` | `200 {}`; a repeated press number is ignored |
+| `GET …/call/{id}/events?after=<cursor>&wait=<s>` | long-poll, `wait` is 10: `{"cursor": c, "events": [...]}` with only the events after `after` |
+| `GET …/call/{id}/piece/{n}` | `application/octet-stream`, raw PCM s16le 16 kHz mono; `404` for a piece that was cleared or already played |
+| `POST …/call/{id}/played` `{"n": <k>}` | `200 {}`, piece `k` played through |
+| `POST …/call/{id}/log` `{"lines": [{"t": <ms>, "ev": "<name>", …}]}` | `200 {}`, what the watch saw: request errors with their codes, retries, playback and capture errors, free memory |
+| `DELETE …/call/{id}` | `200 {}`, hangs up (also for a call that already ended) |
+
+Any route of a call the server no longer knows answers `404`; the watch then opens a new call. `401` is the watch key being rejected and stops the screen with that message.
+
+`turn` counts up per call from 1 and `seq` from 0 per turn. `press` counts up per call from 1. A turn starts by itself (after the call opens, after an answer, after a cut), so the press is only ever "send" or "cut": it ends the turn being recorded, or cuts an answer, and the server tells which. The watch sends the press of a turn only after every chunk of it is acknowledged, a cut's press after the `played` reports of the pieces that played, and the next turn's first chunk after that press.
+
+Events carry their own index `i`, which the watch uses to skip what it saw. Each is one of:
+
+- `{"state": "ready"|"listening"|"generating"|"speaking"}`; the watch starts recording on `listening` once nothing is left to play
+- `{"piece": n, "ref": r, "ms": d}`, a playable piece
+- `{"clear": true, "dropped": k}`, drop every unplayed piece and stop playback
+- `{"heard": "<text>"}`, shown while the answer is being generated
+- `{"said": "<sentence>", "ref": r}`, appended to the line shown while speaking
+- `{"notice": {"code": "…", "text": "…"}}`, shown on screen
+- `{"ended": "<reason>"}`, the call is over; Start opens a new one
+
+The pieces play through one streaming source as 16 kHz mono PCM behind a 44-byte WAV header the watch prepends to each stream.
