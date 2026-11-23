@@ -23,6 +23,8 @@ class ComputerView extends WatchUi.View {
     private var _recorder as Recorder;
     private var _keepCall as Boolean = false;
     private var _volume as Number = START_VOLUME;
+    // the screen has been left some way other than the end of the hang-up
+    private var _left as Boolean = false;
 
     function initialize() {
         View.initialize();
@@ -31,18 +33,15 @@ class ComputerView extends WatchUi.View {
             _volume = saved;
         }
         _client = build();
-        _speaker = new Speaker(_client, _volume);
         _recorder = new Recorder(_client);
         _client.start();
-        // listening has begun; a short buzz says so without a sound that could be recorded
-        if (Attention has :vibrate) {
-            Attention.vibrate([new Attention.VibeProfile(70, 100)]);
-        }
+        // after the start, so that listening begins without waiting for the cues to be built
+        _speaker = new Speaker(_client, _volume);
     }
 
     private function build() as CallClient {
         var io = new CallIo(method(:startCapture), method(:stopCapture), method(:play), method(:stopPlayback), method(:changed),
-            method(:cue), method(:leave));
+            method(:cue), method(:leave), method(:busy));
         return new CallClient(io, new CallEnv());
     }
 
@@ -51,10 +50,11 @@ class ComputerView extends WatchUi.View {
         _keepCall = false;
         if (_client.closed()) {
             _volume = _speaker.volume();
+            _left = false;
             _client = build();
-            _speaker = new Speaker(_client, _volume);
             _recorder = new Recorder(_client);
             _client.start();
+            _speaker = new Speaker(_client, _volume);
         }
         WatchUi.requestUpdate();
     }
@@ -62,6 +62,7 @@ class ComputerView extends WatchUi.View {
     // Leaving the screen ends the call, except for the menu opened on top of it.
     function onHide() as Void {
         if (!_keepCall) {
+            _left = true;
             _client.hangUp();
         }
     }
@@ -76,9 +77,7 @@ class ComputerView extends WatchUi.View {
 
     // A short buzz tells the press was taken; the server answers it a moment later.
     function press() as Void {
-        if (_client.press() && Attention has :vibrate) {
-            Attention.vibrate([new Attention.VibeProfile(70, 80)]);
-        }
+        _client.press();
     }
 
     function reconnect() as Void {
@@ -102,6 +101,7 @@ class ComputerView extends WatchUi.View {
     // Back: the hang-up goes to the server first, then the screen leaves; a second Back leaves at once.
     function back() as Boolean {
         if (_client.closed()) {
+            _left = true;
             return false;
         }
         _client.hangUp();
@@ -110,12 +110,24 @@ class ComputerView extends WatchUi.View {
     }
 
     // The hang-up is over.
+    // Only if the screen is still the one on top: a second Back or an alarm may have left it already.
     function leave() as Void {
-        WatchUi.popView(WatchUi.SLIDE_RIGHT);
+        if (!_left) {
+            _left = true;
+            WatchUi.popView(WatchUi.SLIDE_RIGHT);
+        }
     }
 
-    function cue(kind as Number) as Void {
-        _speaker.cue(kind);
+    // A cue; the one for a sent turn comes with a buzz, after the microphone has stopped.
+    function cue(kind as Number) as Boolean {
+        if (kind == CallLogic.CUE_SENT && Attention has :vibrate) {
+            Attention.vibrate([new Attention.VibeProfile(70, 80)]);
+        }
+        return _speaker.cue(kind);
+    }
+
+    function busy() as Boolean {
+        return _speaker.busy();
     }
 
     // the client's audio side

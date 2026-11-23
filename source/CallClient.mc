@@ -54,15 +54,20 @@ class CallIo {
     var stopPlayback as Method() as Void;
     var changed as Method() as Void;
     // plays one of the watch's own cues (CallLogic.CUE_*)
-    var cue as Method(kind as Number) as Void;
+    // (false when it could not play, then it is asked for again)
+    var cue as Method(kind as Number) as Boolean;
     // the hang-up is over: the screen may leave
     var closed as Method() as Void;
+    // the player is playing a piece: it, not the client's clock, says when the answer is over
+    var busy as Method() as Boolean;
 
     function initialize(startCapture as Method() as Number, stopCapture as Method() as Void,
             play as Method(n as Number, ms as Number, pcm as ByteArray) as Void, stopPlayback as Method() as Void,
-            changed as Method() as Void, cue as Method(kind as Number) as Void, closed as Method() as Void) {
+            changed as Method() as Void, cue as Method(kind as Number) as Boolean, closed as Method() as Void,
+            busy as Method() as Boolean) {
         self.cue = cue;
         self.closed = closed;
+        self.busy = busy;
         self.startCapture = startCapture;
         self.stopCapture = stopCapture;
         self.play = play;
@@ -204,6 +209,7 @@ class CallClient {
     private var _reported as Dictionary<Number, Boolean> = {};
     private var _logUrgent as Boolean = false;
     private var _cueDue as Boolean = false;
+    private var _dropping as Boolean = false;
     private var _cuedSent as Boolean = false;
     private var _hangDoneAt as Number = 0;
     private var _closedSaid as Boolean = false;
@@ -330,10 +336,12 @@ class CallClient {
 
     // A chunk of the turn's Ogg Opus stream from the capture.
     function chunk(data as ByteArray) as Void {
-        if ((!recording && !_captureOpen) || _restartTurn) {
+        if ((!recording && !_captureOpen) || _restartTurn || _dropping) {
             return;
         }
         if (_chunkBytes + data.size() > BUFFER_MAX) {
+            // what follows would sit behind a hole in the stream: the rest of the turn is dropped
+            _dropping = true;
             if (!_bufferFullLogged) {
                 _bufferFullLogged = true;
                 Trace.add("buffer_full", {"bytes" => _chunkBytes});
@@ -418,9 +426,12 @@ class CallClient {
 
     function playbackFailed(code as Number) as Void {
         Trace.add("playback_error", {"code" => code});
-        setNotice("Playback error " + code);
         playbackActive = false;
         forgetUnplayed();
+        if (stalled == null && fatal == null && !_closing) {
+            // a piece that cannot play ends the call's listening, once, with the error cue
+            stopForGood("Playback error " + code, true);
+        }
         changed();
     }
 
@@ -435,6 +446,9 @@ class CallClient {
     // The player may never say that a piece is over: by the clock it is, a little after its length.
     // Pieces then count as played and recording may begin without the player's word.
     private function endPlaybackByTimer(now as Number) as Void {
+        if (_io.busy.invoke()) {
+            return;
+        }
         while (_fed.size() > 0 && _fed[0][1] + PLAY_SLACK_MS <= now) {
             Trace.add("play_timer", {"n" => _fed[0][0]});
             piecePlayed(_fed[0][0]);
@@ -487,6 +501,7 @@ class CallClient {
         recalcInflight();
         heard = "";
         _bufferFullLogged = false;
+        _dropping = false;
         _cueDue = false;
         var started = _io.startCapture.invoke();
         if (started == 0) {
@@ -656,12 +671,15 @@ class CallClient {
 
     private function autoRecord(now as Number) as Void {
         if (_call != null && !recording && !_endPending && !_turnSent && engine.equals("listening")
-                && !playbackActive && !moreToPlay() && now >= _autoAt && fatal == null && stalled == null) {
+                && !playbackActive && !moreToPlay() && now >= _autoAt && fatal == null && stalled == null
+                && !_io.busy.invoke()) {
             if (_cueDue) {
-                // "your turn": the microphone opens once the cue has played, so it is not recorded
-                _cueDue = false;
-                _io.cue.invoke(CallLogic.CUE_YOUR_TURN);
-                _autoAt = now + CallLogic.cueMs(CallLogic.CUE_YOUR_TURN) + CUE_GUARD_MS;
+                // "your turn": the microphone opens once the cue has played, so it is not recorded; a cue
+                // that could not play is asked for again
+                if (_io.cue.invoke(CallLogic.CUE_YOUR_TURN)) {
+                    _cueDue = false;
+                    _autoAt = _env.now() + CallLogic.cueMs(CallLogic.CUE_YOUR_TURN) + CUE_GUARD_MS;
+                }
                 return;
             }
             startTurn();

@@ -7,6 +7,7 @@ import Toybox.Test;
 class FakeEnv extends CallEnv {
     var clock as Number = 0;
     var requests as Array<Dictionary> = [];
+    var audioBytes as Number = 0;
 
     function initialize() {
         CallEnv.initialize();
@@ -36,6 +37,9 @@ class FakeEnv extends CallEnv {
 
     (:typecheck(false))
     function request(url as String, params as Object?, options as Dictionary, callback as Method) as Void {
+        if (url.find("/audio") != null && options[:body] != null) {
+            audioBytes += (options[:body] as ByteArray).size();
+        }
         requests.add({:url => url, :params => params, :body => options[:body], :callback => callback, :open => true});
     }
 
@@ -166,14 +170,20 @@ class FakeIo {
     var played as Array<Number> = [];
     var cues as Array<Number> = [];
     var closedCalls as Number = 0;
+    var busyNow as Boolean = false;
 
     function io() as CallIo {
         return new CallIo(method(:startCapture), method(:stopCapture), method(:play), method(:stopPlayback), method(:changed),
-            method(:cue), method(:closed));
+            method(:cue), method(:closed), method(:busy));
     }
 
-    function cue(kind as Number) as Void {
+    function cue(kind as Number) as Boolean {
         cues.add(kind);
+        return true;
+    }
+
+    function busy() as Boolean {
+        return busyNow;
     }
 
     function closed() as Void {
@@ -391,4 +401,68 @@ function requestsGoOneAtATimeInPriorityOrder(logger as Logger) as Boolean {
         }
     }
     return shortWait && order[0].equals("audio") && order[1].equals("command") && order[2].equals("log") && order[3].equals("events");
+}
+
+(:test)
+function aPlayerThatIsStillPlayingKeepsTheClockFromEndingTheAnswer(logger as Logger) as Boolean {
+    var env = new FakeEnv();
+    var io = new FakeIo();
+    var c = Kit.opened(env, io);
+    c.chunk(Kit.silence(300));
+    c.press();
+    c.captureEnded();
+    env.settle();
+    env.reply("/events", 200, {"cursor" => 3, "events" => [{"i" => 1, "state" => "generating"}, {"i" => 2, "piece" => 0, "ms" => 1500}, {"i" => 3, "state" => "listening"}]});
+    env.reply("/piece/0", 200, Kit.silence(5000));
+    // the piece is late on the watch: long past its length by the clock, the player still plays it
+    io.busyNow = true;
+    for (var t = 2000; t <= 6000; t += 500) {
+        env.clock = t;
+        c.tick();
+    }
+    var held = io.captures == 1 && io.cues.size() == 1 && !c.recording;
+    io.busyNow = false;
+    env.clock = 6500;
+    c.tick();
+    env.clock = 7000;
+    c.tick();
+    env.clock = 7700;
+    c.tick();
+    return held && io.cues.size() == 2 && io.captures == 2;
+}
+
+(:test)
+function aPieceThatCannotPlayStopsListeningWithTheErrorCueOnce(logger as Logger) as Boolean {
+    var env = new FakeEnv();
+    var io = new FakeIo();
+    var c = Kit.opened(env, io);
+    c.playbackFailed(0);
+    c.playbackFailed(0);
+    var errors = 0;
+    for (var i = 0; i < io.cues.size(); i++) {
+        if (io.cues[i] == CallLogic.CUE_ERROR) {
+            errors += 1;
+        }
+    }
+    return errors == 1 && c.stalled != null && !c.recording;
+}
+
+(:test)
+function afterABufferOverflowTheRestOfTheTurnIsDropped(logger as Logger) as Boolean {
+    var env = new FakeEnv();
+    var io = new FakeIo();
+    Trace.lines = [];
+    var c = new CallClient(io.io(), env);
+    io.client = c;
+    c.start();
+    c.chunk(Kit.silence(30000));
+    c.chunk(Kit.silence(30000));
+    // this one does not fit; what follows would sit behind a hole
+    c.chunk(Kit.silence(10000));
+    c.chunk(Kit.silence(100));
+    c.captureEnded();
+    c.tick();
+    env.reply("voice/call", 201, {"call" => "c1"});
+    env.settle();
+    return env.audioBytes == 60000;
 }
