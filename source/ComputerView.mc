@@ -19,18 +19,31 @@ class ComputerView extends WatchUi.View {
     private var _speaker as Speaker;
     private var _recorder as Recorder;
     private var _keepCall as Boolean = false;
+    private var _volume as Number = START_VOLUME;
 
     function initialize() {
         View.initialize();
-        var io = new CallIo(method(:startCapture), method(:stopCapture), method(:play), method(:stopPlayback), method(:changed));
-        _client = new CallClient(io);
-        _speaker = new Speaker(_client, START_VOLUME);
+        _client = build();
+        _speaker = new Speaker(_client, _volume);
         _recorder = new Recorder(_client);
         _client.start();
     }
 
+    private function build() as CallClient {
+        var io = new CallIo(method(:startCapture), method(:stopCapture), method(:play), method(:stopPlayback), method(:changed));
+        return new CallClient(io, new CallEnv());
+    }
+
+    // Back from something that covered the screen (the hang-up had ended the call): a new call.
     function onShow() as Void {
         _keepCall = false;
+        if (_client.closed()) {
+            _volume = _speaker.volume();
+            _client = build();
+            _speaker = new Speaker(_client, _volume);
+            _recorder = new Recorder(_client);
+            _client.start();
+        }
         WatchUi.requestUpdate();
     }
 
@@ -71,7 +84,7 @@ class ComputerView extends WatchUi.View {
     }
 
     // the client's audio side
-    function startCapture() as Boolean {
+    function startCapture() as Number {
         return _recorder.start();
     }
 
@@ -108,6 +121,11 @@ class ComputerView extends WatchUi.View {
             headline = "Call ended";
             body = ended;
             hint = "Start: new call";
+        } else if (_client.stalled != null && !_client.recording) {
+            headline = "Not listening";
+            color = Graphics.COLOR_ORANGE;
+            body = _client.stalled as String;
+            hint = "Start: try again";
         } else if (_client.recording) {
             headline = "Listening " + elapsed();
             color = Graphics.COLOR_RED;
@@ -116,6 +134,9 @@ class ComputerView extends WatchUi.View {
         } else if (!_client.hasCall()) {
             headline = "Connecting";
             color = Graphics.COLOR_LT_GRAY;
+        } else if (_client.sending()) {
+            headline = "Sending";
+            color = Graphics.COLOR_YELLOW;
         } else if (_client.engine.equals("speaking") || _client.playbackActive) {
             headline = "Speaking";
             color = Graphics.COLOR_GREEN;
@@ -170,6 +191,11 @@ class ComputerDelegate extends WatchUi.BehaviorDelegate {
 
     function onSelect() as Boolean {
         _view.press();
+        return true;
+    }
+
+    // A tap (a sleeve, sweat) is not a press: only the button sends or cuts.
+    function onTap(evt as WatchUi.ClickEvent) as Boolean {
         return true;
     }
 

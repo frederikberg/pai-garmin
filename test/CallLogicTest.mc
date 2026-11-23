@@ -38,10 +38,12 @@ function pcmLengthIsMilliseconds(logger as Logger) as Boolean {
 function traceKeepsAFixedNumberOfLines(logger as Logger) as Boolean {
     Trace.lines = [];
     Trace.dropped = 0;
+    Trace.reported = 0;
     for (var i = 0; i < Trace.MAX_LINES + 5; i++) {
         Trace.add("x", {"i" => i});
     }
-    var kept = Trace.lines.size() == Trace.MAX_LINES && Trace.dropped > 0 && (Trace.lines[0]["i"] as Number) == 5;
+    var kept = Trace.lines.size() == Trace.MAX_LINES && Trace.dropped == 5 && (Trace.lines[0]["i"] as Number) == 0
+        && (Trace.lines[Trace.KEEP_FIRST]["i"] as Number) == Trace.KEEP_FIRST + 5;
     var batch = Trace.batch(20);
     Trace.confirm(20);
     var rest = Trace.lines.size() == Trace.MAX_LINES - 20 && Trace.dropped == 0;

@@ -3,15 +3,58 @@ import Toybox.Lang;
 import Toybox.System;
 import Toybox.Timer;
 
+// What the client takes from the device: the clock, the request queue, the setup and the launch
+// gate. The screen uses this one; a test supplies its own.
+class CallEnv {
+    private var _clock as Timer.Timer = new Timer.Timer();
+
+    function now() as Number {
+        return System.getTimer();
+    }
+
+    // 0 when requests can go out, 1 when the server is not set up, 2 when there is no phone.
+    function check() as Number {
+        if (!ServerConfig.isSet()) {
+            return 1;
+        }
+        return System.getDeviceSettings().phoneConnected ? 0 : 2;
+    }
+
+    function baseUrl() as String {
+        return ServerConfig.url();
+    }
+
+    // The check for a ringing alarm at launch counts as a request in flight until it is over.
+    function gateOpen() as Boolean {
+        return Gate.open;
+    }
+
+    function startClock(tick as Method() as Void, ms as Number) as Void {
+        _clock.start(tick, ms, true);
+    }
+
+    function stopClock() as Void {
+        _clock.stop();
+    }
+
+    // The request options are a plain dictionary, which the strict check cannot match to
+    // makeWebRequest's.
+    (:typecheck(false))
+    function request(url as String, params as Object?, options as Dictionary, callback as Method) as Void {
+        Communications.makeWebRequest(url, params, options, callback);
+    }
+}
+
 // The audio side of a call, as the client sees it: methods the screen supplies.
 class CallIo {
-    var startCapture as Method() as Boolean;
+    // 0 when recording began, 1 when the watch cannot capture Ogg Opus, 2 when it failed to start
+    var startCapture as Method() as Number;
     var stopCapture as Method() as Void;
     var play as Method(n as Number, ms as Number, pcm as ByteArray) as Void;
     var stopPlayback as Method() as Void;
     var changed as Method() as Void;
 
-    function initialize(startCapture as Method() as Boolean, stopCapture as Method() as Void,
+    function initialize(startCapture as Method() as Number, stopCapture as Method() as Void,
             play as Method(n as Number, ms as Number, pcm as ByteArray) as Void, stopPlayback as Method() as Void,
             changed as Method() as Void) {
         self.startCapture = startCapture;
@@ -62,10 +105,19 @@ class CallClient {
     // fetched but not yet played PCM
     const UNPLAYED_MAX = 160000;
     const PIECE_TRIES = 6;
+    // failed turns in a row before recording stops and the cause is shown
+    const MAX_FAILS = 5;
+    // a request slower than this is logged with its round trip; of the rest, every 20th
+    const SLOW_MS = 3000;
+    // the -101 limit is raised again after this long without one
+    const LIMIT_RECOVER_MS = 60000;
+    // events are sent at least this often even when other requests are waiting for the one slot
+    const EVENTS_EVERY_MS = 3000;
+    const LOSS_WINDOW_MS = 20000;
+    const MAX_LOSSES = 5;
     // 409s in a row on one turn before it is given up
     const MAX_CONFLICTS = 4;
     const AUTO_RECORD_DELAY_MS = 400;
-    const TURN_SENT_MS = 6000;
     const NOTICE_MS = 4000;
     const STOP_WAIT_MS = 1500;
     const LOG_BATCH = 20;
@@ -85,11 +137,11 @@ class CallClient {
     }
 
     private var _io as CallIo;
+    private var _env as CallEnv;
     private var _lanes as Array<Lane> = [
         new Lane("open", 20000), new Lane("events", 30000), new Lane("command", 20000), new Lane("audio", 20000),
         new Lane("piece", 40000), new Lane("played", 20000), new Lane("log", 20000), new Lane("hang", 10000)
     ];
-    private var _clock as Timer.Timer = new Timer.Timer();
     private var _inflight as Number = 0;
     private var _parallel as Number = START_PARALLEL;
     private var _closing as Boolean = false;
@@ -102,6 +154,8 @@ class CallClient {
     var notice as String? = null;
     private var _noticeUntil as Number = 0;
     var endedReason as String? = null;
+    // why recording stopped for good until Start is pressed
+    var stalled as String? = null;
     var recording as Boolean = false;
     var recordingSince as Number = 0;
     var playbackActive as Boolean = false;
@@ -126,7 +180,17 @@ class CallClient {
     private var _captureOpen as Boolean = false;
     private var _stopAt as Number = 0;
     private var _turnSent as Boolean = false;
-    private var _turnSentAt as Number = 0;
+    private var _turnSentPoll as Number = -1;
+    private var _pollsSent as Number = 0;
+    private var _pollNo as Number = 0;
+    private var _lastEventsAt as Number = 0;
+    private var _lastQueueFull as Number = 0;
+    private var _failStreak as Number = 0;
+    private var _lossTimes as Array<Number> = [];
+    private var _fatalNotSet as Boolean = false;
+    private var _bufferFullLogged as Boolean = false;
+    private var _requests as Number = 0;
+    private var _shownSecond as Number = -1;
     private var _autoAt as Number = 0;
 
     private var _press as Number = 0;
@@ -149,15 +213,17 @@ class CallClient {
     private var _lastLog as Number = 0;
     private var _lastMem as Number = 0;
 
-    function initialize(io as CallIo) {
+    function initialize(io as CallIo, env as CallEnv) {
         _io = io;
+        _env = env;
     }
 
     // ----- the screen's side
 
     function start() as Void {
-        Trace.add("start", null);
-        _clock.start(method(:tick), TICK_MS, true);
+        var device = System.getDeviceSettings();
+        Trace.add("device", {"part" => device.partNumber, "fw" => device.firmwareVersion, "audio" => Toybox has :Audio});
+        _env.startClock(method(:tick), TICK_MS);
         changed();
     }
 
@@ -169,14 +235,35 @@ class CallClient {
         }
         if (_call == null && endedReason != null) {
             reconnect();
+        } else if (stalled != null) {
+            // Start tries again after a stop for good
+            stalled = null;
+            _failStreak = 0;
+            _lossTimes = [];
+            _lanes[OPEN].notBefore = 0;
+            if (_call != null && !recording) {
+                startTurn();
+            }
         } else if (recording) {
             endTurn();
         } else if (busyAnswering()) {
             cut();
+        } else if (_call != null && !_endPending && !_restartTurn) {
+            // between turns, Start begins the recording that did not begin by itself
+            startTurn();
         } else {
             return false;
         }
         return true;
+    }
+
+    function closed() as Boolean {
+        return _closing;
+    }
+
+    // True from Start until the server answers: the press is on its way.
+    function sending() as Boolean {
+        return _endPending || (_turnSent && _turnSentPoll < 0);
     }
 
     // A new call in place of the current one.
@@ -194,7 +281,7 @@ class CallClient {
             return;
         }
         _closing = true;
-        _closedAt = System.getTimer();
+        _closedAt = _env.now();
         Trace.add("hangup", null);
         stopCapture();
         _io.stopPlayback.invoke();
@@ -218,12 +305,19 @@ class CallClient {
             return;
         }
         if (_chunkBytes + data.size() > BUFFER_MAX) {
-            Trace.add("buffer_full", {"bytes" => _chunkBytes});
+            if (!_bufferFullLogged) {
+                _bufferFullLogged = true;
+                Trace.add("buffer_full", {"bytes" => _chunkBytes});
+            }
             if (recording) {
                 setNotice("Link too slow");
                 endTurn();
             }
             return;
+        }
+        if (_turnBytes == 0) {
+            var head = data.size() >= 4 ? data.slice(0, 4) : data;
+            Trace.add("first_chunk", {"size" => data.size(), "ogg" => data.size() >= 4 && data[0] == 0x4F && data[1] == 0x67 && data[2] == 0x67 && data[3] == 0x53, "head" => head.toString()});
         }
         _chunks.add(data);
         _chunkBytes += data.size();
@@ -247,8 +341,8 @@ class CallClient {
         if (recording) {
             recording = false;
             _captureOpen = false;
-            setNotice("Microphone error " + code);
             discardTurn();
+            recordFailed("Microphone error " + code);
         }
         changed();
     }
@@ -267,15 +361,23 @@ class CallClient {
     // The player has nothing left to play.
     function playbackIdle() as Void {
         playbackActive = false;
-        _autoAt = System.getTimer() + AUTO_RECORD_DELAY_MS;
+        forgetUnplayed();
+        _autoAt = _env.now() + AUTO_RECORD_DELAY_MS;
         changed();
     }
 
     function playbackFailed(code as Number) as Void {
         Trace.add("playback_error", {"code" => code});
-        setNotice("Playback error");
+        setNotice("Playback error " + code);
         playbackActive = false;
+        forgetUnplayed();
         changed();
+    }
+
+    // What the player held when it stopped or failed is gone: it no longer counts against the fetch limit.
+    private function forgetUnplayed() as Void {
+        _unplayed = 0;
+        _sizes = {};
     }
 
     // True while there is still audio to come for the player: pieces waiting, being fetched, or just
@@ -317,17 +419,22 @@ class CallClient {
         _lanes[AUDIO].busy = false;
         recalcInflight();
         heard = "";
-        if (_io.startCapture.invoke()) {
+        _bufferFullLogged = false;
+        var started = _io.startCapture.invoke();
+        if (started == 0) {
             recording = true;
             _captureOpen = true;
-            recordingSince = System.getTimer();
+            recordingSince = _env.now();
             Trace.add("turn_start", {"turn" => _turn});
+        } else if (started == 1) {
+            recording = false;
+            _captureOpen = false;
+            stalled = "This watch cannot capture Opus";
+            Trace.add("capture_unavailable", null);
         } else {
             recording = false;
             _captureOpen = false;
-            notice = "No Opus capture";
-            _noticeUntil = 0;
-            Trace.add("capture_unavailable", null);
+            recordFailed("Microphone busy");
         }
         changed();
     }
@@ -335,7 +442,7 @@ class CallClient {
     private function endTurn() as Void {
         recording = false;
         _endPending = true;
-        _stopAt = System.getTimer() + STOP_WAIT_MS;
+        _stopAt = _env.now() + STOP_WAIT_MS;
         _io.stopCapture.invoke();
         changed();
     }
@@ -376,14 +483,14 @@ class CallClient {
         }
         queuePress();
         _turnSent = true;
-        _turnSentAt = System.getTimer();
+        _turnSentPoll = -1;
         changed();
     }
 
     private function queuePress() as Void {
         _press += 1;
         _commands.add({"action" => "press", "press" => _press, "turn" => _turn} as Dictionary<String, Object>);
-        _holdUntil = System.getTimer() + PRESS_HOLD_MS;
+        _holdUntil = _env.now() + PRESS_HOLD_MS;
         Trace.add("press", {"press" => _press, "turn" => _turn});
     }
 
@@ -392,6 +499,7 @@ class CallClient {
         _io.stopPlayback.invoke();
         dropPieces();
         _turnSent = false;
+        _turnSentPoll = -1;
         queuePress();
         startTurn();
     }
@@ -401,6 +509,7 @@ class CallClient {
     }
 
     private function dropPieces() as Void {
+        forgetUnplayed();
         _pieces = [];
         _lanes[PIECE].token += 1;
         _lanes[PIECE].busy = false;
@@ -411,7 +520,7 @@ class CallClient {
     // ----- the clock
 
     function tick() as Void {
-        var now = System.getTimer();
+        var now = _env.now();
         for (var i = 0; i < _lanes.size(); i++) {
             var lane = _lanes[i];
             if (lane.busy && now - lane.sentAt > lane.watchdogMs) {
@@ -423,7 +532,7 @@ class CallClient {
         }
         if (_closing) {
             if (now - _closedAt > HANG_GRACE_MS || (!_lanes[HANG].busy && !_lanes[LOG].busy && _hangId == null && (Trace.lines.size() == 0 || _closeCall == null))) {
-                _clock.stop();
+                _env.stopClock();
             }
             pump();
             return;
@@ -439,9 +548,14 @@ class CallClient {
             Trace.add("capture_no_complete", null);
             _captureOpen = false;
         }
-        if (_turnSent && _commands.size() == 0 && now - _turnSentAt > TURN_SENT_MS) {
-            Trace.add("turn_sent_timeout", null);
-            _turnSent = false;
+        if (_fatalNotSet && _env.check() != 1) {
+            fatal = null;
+            _fatalNotSet = false;
+        }
+        if (_parallel < START_PARALLEL && now - _lastQueueFull > LIMIT_RECOVER_MS) {
+            _parallel += 1;
+            _lastQueueFull = now;
+            Trace.add("parallel_limit", {"limit" => _parallel});
         }
         if (now - _lastMem > MEM_EVERY_MS) {
             _lastMem = now;
@@ -449,14 +563,15 @@ class CallClient {
         }
         autoRecord(now);
         pump();
-        if (recording) {
+        if (recording && (now - recordingSince) / 1000 != _shownSecond) {
+            _shownSecond = (now - recordingSince) / 1000;
             changed();
         }
     }
 
     private function autoRecord(now as Number) as Void {
         if (_call != null && !recording && !_endPending && !_turnSent && engine.equals("listening")
-                && !playbackActive && !moreToPlay() && now >= _autoAt && fatal == null && notice != "No Opus capture") {
+                && !playbackActive && !moreToPlay() && now >= _autoAt && fatal == null && stalled == null) {
             startTurn();
         }
     }
@@ -475,7 +590,7 @@ class CallClient {
 
     private function ready(lane as Number) as Boolean {
         var l = _lanes[lane];
-        return !l.busy && System.getTimer() >= l.notBefore && _inflight < _parallel;
+        return !l.busy && _env.now() >= l.notBefore && _inflight < _parallel;
     }
 
     function pump() as Void {
@@ -496,15 +611,18 @@ class CallClient {
             sendHang();
         }
         if (call == null) {
-            if (fatal == null && endedReason == null && ready(OPEN)) {
+            if (fatal == null && stalled == null && endedReason == null && _env.gateOpen() && ready(OPEN)) {
                 sendOpen();
             }
             return;
         }
-        if (ready(EVENTS)) {
+        var now = _env.now();
+        // with one request slot the events wait behind the rest, but not for long
+        var eventsFirst = _parallel > 1 || now - _lastEventsAt >= EVENTS_EVERY_MS;
+        if (eventsFirst && ready(EVENTS)) {
             sendEvents(call);
         }
-        if (_commands.size() > 0 && ready(CMD) && (_playedQueue.size() == 0 || System.getTimer() >= _holdUntil)) {
+        if (_commands.size() > 0 && ready(CMD) && (_playedQueue.size() == 0 || now >= _holdUntil)) {
             sendCommand(call);
         }
         if (_commands.size() == 0 && (_chunks.size() > 0 || _body != null || _resend.size() > 0) && ready(AUDIO)) {
@@ -516,39 +634,41 @@ class CallClient {
         if (_playedQueue.size() > 0 && ready(PLAYED)) {
             sendPlayed(call);
         }
-        var now = System.getTimer();
         if (!_logHold && Trace.lines.size() > 0 && ready(LOG) && (Trace.lines.size() >= LOG_BATCH || now - _lastLog >= LOG_EVERY_MS)) {
             sendLog(call);
+        }
+        if (!eventsFirst && ready(EVENTS)) {
+            sendEvents(call);
         }
     }
 
     private function url(path as String) as String {
-        return ServerConfig.url() + Api.VOICE_CALL + path;
+        return _env.baseUrl() + Api.VOICE_CALL + path;
     }
 
-    // Starts the request of a lane, or fails it when it cannot go out (no setup, no phone). The
-    // request options are a plain dictionary, which the strict check cannot match to makeWebRequest's.
-    (:typecheck(false))
+    // Starts the request of a lane, or fails it when it cannot go out (no setup, no phone).
     private function go(lane as Number, verb as Communications.HttpRequestMethod, path as String,
             params as Dictionary<Object, Object>?, options as Dictionary) as Void {
         var l = _lanes[lane];
-        if (!ServerConfig.isSet()) {
+        var check = _env.check();
+        if (check == 1) {
             fatal = "Set the server in Garmin Connect";
+            _fatalNotSet = true;
             changed();
             return;
         }
-        if (!System.getDeviceSettings().phoneConnected) {
+        if (check == 2) {
             failed(lane, Communications.BLE_CONNECTION_UNAVAILABLE);
             return;
         }
         l.busy = true;
-        l.sentAt = System.getTimer();
+        l.sentAt = _env.now();
         l.token += 1;
         _inflight += 1;
         l.crowd = _inflight;
         options[:method] = verb;
         try {
-            Communications.makeWebRequest(url(path) + retryTag(path, l.failures), params, options, new Answer(self, lane, l.token).method(:onResponse));
+            _env.request(url(path) + retryTag(path, l.failures), params, options, new Answer(self, lane, l.token).method(:onResponse));
         } catch (ex) {
             l.busy = false;
             _inflight -= 1;
@@ -587,6 +707,9 @@ class CallClient {
     }
 
     private function sendEvents(call as String) as Void {
+        _pollsSent += 1;
+        _pollNo = _pollsSent;
+        _lastEventsAt = _env.now();
         var params = {"after" => _cursor, "wait" => _parallel > 1 ? POLL_WAIT_S : POLL_WAIT_SINGLE_S} as Dictionary<Object, Object>;
         go(EVENTS, Communications.HTTP_REQUEST_METHOD_GET, "/" + call + "/events", params, jsonOptions(null));
     }
@@ -630,8 +753,8 @@ class CallClient {
     private function sendLog(call as String) as Void {
         var count = Trace.lines.size() < LOG_BATCH ? Trace.lines.size() : LOG_BATCH;
         _logSent = count;
-        _lastLog = System.getTimer();
-        jsonPost(LOG, "/" + call + "/log", {"lines" => Trace.batch(LOG_BATCH)} as Dictionary<Object, Object>);
+        _lastLog = _env.now();
+        jsonPost(LOG, "/" + call + "/log", {"sent_t" => _env.now(), "lines" => Trace.batch(LOG_BATCH)} as Dictionary<Object, Object>);
     }
 
     private function sendHang() as Void {
@@ -650,10 +773,20 @@ class CallClient {
         }
         l.busy = false;
         recalcInflight();
+        var rtt = _env.now() - l.sentAt;
+        if (lane == EVENTS) {
+            _lastEventsAt = _env.now();
+        }
+        _requests += 1;
+        if ((lane != EVENTS && rtt > SLOW_MS) || rtt > (POLL_WAIT_S + 4) * 1000 || _requests % 20 == 0) {
+            var bytes = data instanceof ByteArray ? data.size() : (lane == AUDIO && _body != null ? (_body as ByteArray).size() : 0);
+            Trace.add("rtt", {"lane" => l.name, "ms" => rtt, "bytes" => bytes, "code" => code});
+        }
         if (code >= 200 && code < 300 || code == -400 && (lane == HANG || lane == PLAYED || lane == CMD || lane == LOG)) {
-            l.failures = 0;
-            l.notBefore = 0;
-            succeeded(lane, code, data);
+            if (succeeded(lane, code, data)) {
+                l.failures = 0;
+                l.notBefore = 0;
+            }
         } else {
             rejected(lane, code, data);
         }
@@ -675,7 +808,10 @@ class CallClient {
             }
             return;
         }
-        if (code == 401) {
+        if (code == Communications.SECURE_CONNECTION_REQUIRED || code == Communications.UNSUPPORTED_CONTENT_TYPE_IN_RESPONSE) {
+            fatal = "Request refused, code " + code;
+            Trace.add("request_refused", {"lane" => _lanes[lane].name, "code" => code});
+        } else if (code == 401) {
             fatal = "Watch key rejected";
             Trace.add("key_rejected", {"lane" => _lanes[lane].name});
         } else if (code == 403 && lane == OPEN) {
@@ -696,12 +832,12 @@ class CallClient {
             if (lane == LOG) {
                 _logHold = true;
             } else if (lane == AUDIO) {
-                abandonTurn("Call ended");
+                abandonTurn("Call ended", null);
             } else {
                 drop(lane);
             }
         } else if (code == 422 && lane == AUDIO) {
-            abandonTurn("Lost audio, try again");
+            abandonTurn("Lost audio, try again", "Server rejects the audio");
         } else if (code == 409 && lane == AUDIO) {
             conflict(data);
         } else if (CallLogic.retryable(code)) {
@@ -713,7 +849,7 @@ class CallClient {
         }
     }
 
-    private function succeeded(lane as Number, code as Number, data as Dictionary or String or ByteArray or Null) as Void {
+    private function succeeded(lane as Number, code as Number, data as Dictionary or String or ByteArray or Null) as Boolean {
         if (lane == OPEN) {
             var id = data instanceof Dictionary ? data["call"] as Object? : null;
             if (id instanceof String) {
@@ -721,14 +857,18 @@ class CallClient {
                 Trace.add("opened", {"call" => id});
             } else {
                 failed(OPEN, 0);
+                return false;
             }
         } else if (lane == EVENTS) {
-            handleEvents(data);
+            return handleEvents(data);
         } else if (lane == CMD) {
             if (_commands.size() > 0) {
                 _commands = _commands.slice(1, null) as Array<Dictionary<String, Object>>;
             }
-            _turnSentAt = System.getTimer();
+            if (_turnSent && _turnSentPoll < 0) {
+                _turnSentPoll = _pollsSent;
+            }
+            _failStreak = 0;
         } else if (lane == AUDIO) {
             keepSent();
             _seq += 1;
@@ -744,6 +884,7 @@ class CallClient {
                 _io.play.invoke(n, piece["ms"] as Number, data);
             } else {
                 failed(PIECE, -400);
+                return false;
             }
         } else if (lane == PLAYED) {
             if (_playedQueue.size() > 0) {
@@ -754,6 +895,7 @@ class CallClient {
         } else if (lane == HANG) {
             _hangId = null;
         }
+        return true;
     }
 
     // The acknowledged body stays available for a resend, within the buffer's bound.
@@ -787,8 +929,12 @@ class CallClient {
             _parallel = l.crowd - 1;
             Trace.add("parallel_limit", {"limit" => _parallel});
         }
-        l.notBefore = System.getTimer() + CallLogic.backoff(l.failures);
-        if (lane != LOG) {
+        if (code == Communications.BLE_QUEUE_FULL) {
+            _lastQueueFull = _env.now();
+        }
+        l.notBefore = _env.now() + CallLogic.backoff(l.failures);
+        // the first retries say what went wrong; a long outage then adds a line only now and then
+        if (lane != LOG && (l.failures <= 3 || l.failures % 10 == 0)) {
             Trace.add("retry", {"lane" => l.name, "code" => code, "n" => l.failures, "crowd" => l.crowd});
         }
         if (lane == PIECE) {
@@ -804,9 +950,9 @@ class CallClient {
     private function drop(lane as Number) as Void {
         if (lane == CMD && _commands.size() > 0) {
             _commands = _commands.slice(1, null) as Array<Dictionary<String, Object>>;
+            _turnSent = false;
         } else if (lane == AUDIO) {
-            _body = null;
-            _seq += 1;
+            abandonTurn("Lost audio, try again", "Server refuses the audio");
         } else if (lane == PLAYED && _playedQueue.size() > 0) {
             _playedQueue = _playedQueue.slice(1, null) as Array<Number>;
         } else if (lane == LOG) {
@@ -825,13 +971,21 @@ class CallClient {
         var next = field instanceof Number ? field : _sentBase;
         _conflicts += 1;
         if (_conflicts > MAX_CONFLICTS) {
-            abandonTurn("Lost audio, try again");
+            abandonTurn("Lost audio, try again", "Audio lost on the link");
             return;
         }
         var verdict = CallLogic.afterConflict(_seq, next, _sentBase);
         Trace.add("seq_conflict", {"sent" => _seq, "expected" => next, "verdict" => verdict, "body" => field instanceof Number});
         if (verdict.equals("acked")) {
-            keepSent();
+            if (next == _seq + 1) {
+                keepSent();
+            } else {
+                // the server is further ahead than this chunk: what was kept no longer lines up
+                _body = null;
+                _sentBodies = [];
+                _sentBytes = 0;
+                _sentBase = next;
+            }
             _seq = next;
         } else if (verdict.equals("rewind")) {
             // the server misses chunks the watch still holds: they go again from the one it expects
@@ -848,14 +1002,14 @@ class CallClient {
             _body = null;
             _seq = next;
         } else {
-            abandonTurn("Lost audio, try again");
+            abandonTurn("Lost audio, try again", "Audio lost on the link");
         }
     }
 
     // A short message on the screen.
     private function setNotice(text as String) as Void {
         notice = text;
-        _noticeUntil = System.getTimer() + NOTICE_MS;
+        _noticeUntil = _env.now() + NOTICE_MS;
     }
 
     // The server dropped the open turn (no press for too long): a new turn takes its place, with a
@@ -867,7 +1021,7 @@ class CallClient {
         }
         recording = false;
         _restartTurn = true;
-        _stopAt = System.getTimer() + STOP_WAIT_MS;
+        _stopAt = _env.now() + STOP_WAIT_MS;
         _io.stopCapture.invoke();
     }
 
@@ -876,12 +1030,13 @@ class CallClient {
         _captureOpen = false;
         discardTurn();
         // the next turn starts by itself a moment after the old capture has fully stopped
-        _autoAt = System.getTimer() + AUTO_RECORD_DELAY_MS;
+        _autoAt = _env.now() + AUTO_RECORD_DELAY_MS;
     }
 
     // The turn cannot be completed: it is dropped without a press and the next one starts by itself.
-    private function abandonTurn(text as String) as Void {
-        Trace.add("turn_abandoned", {"turn" => _turn});
+    // A cause counts the failure; a few in a row stop the recording until Start is pressed.
+    private function abandonTurn(text as String, cause as String?) as Void {
+        Trace.add("turn_abandoned", {"turn" => _turn, "cause" => cause});
         recording = false;
         if (_captureOpen) {
             _io.stopCapture.invoke();
@@ -890,14 +1045,31 @@ class CallClient {
         discardTurn();
         setNotice(text);
         _turnSent = false;
+        if (cause != null) {
+            recordFailed(cause);
+        }
+    }
+
+    // A recording that failed: the next try waits longer each time, and after a few the cause stays
+    // on screen until Start tries again.
+    private function recordFailed(cause as String) as Void {
+        _failStreak += 1;
+        var wait = 2000 * _failStreak;
+        _autoAt = _env.now() + (wait > 30000 ? 30000 : wait);
+        Trace.add("record_failed", {"cause" => cause, "n" => _failStreak});
+        if (_failStreak >= MAX_FAILS) {
+            stalled = cause;
+        } else {
+            setNotice(cause);
+        }
     }
 
     // ----- events
 
-    private function handleEvents(data as Dictionary or String or ByteArray or Null) as Void {
+    private function handleEvents(data as Dictionary or String or ByteArray or Null) as Boolean {
         if (!(data instanceof Dictionary)) {
             failed(EVENTS, -400);
-            return;
+            return false;
         }
         var events = data["events"] as Object?;
         var cursor = data["cursor"] as Object?;
@@ -912,6 +1084,7 @@ class CallClient {
         if (cursor instanceof Number && cursor > _cursor) {
             _cursor = cursor;
         }
+        return true;
     }
 
     private function handleEvent(e as Dictionary<String, Object>) as Void {
@@ -928,6 +1101,9 @@ class CallClient {
             engine = state;
             Trace.add("state", {"state" => state});
             if (state.equals("generating") || state.equals("speaking")) {
+                _turnSent = false;
+            } else if (_turnSent && _commands.size() == 0 && _turnSentPoll >= 0 && _pollNo > _turnSentPoll) {
+                // listening again, in an answer to a poll sent after the press was taken: nothing to answer
                 _turnSent = false;
             }
         } else if (piece instanceof Number) {
@@ -961,15 +1137,35 @@ class CallClient {
         } else if (e["heard"] instanceof String) {
             heard = e["heard"] as String;
         }
-        _autoAt = _autoAt > System.getTimer() ? _autoAt : System.getTimer() + AUTO_RECORD_DELAY_MS;
+        _autoAt = _autoAt > _env.now() ? _autoAt : _env.now() + AUTO_RECORD_DELAY_MS;
     }
 
     // ----- a call ends or is lost
 
-    // The server does not know the call any more: a new one takes its place.
+    // The server does not know the call any more: a new one takes its place, sooner or later; losses
+    // in quick succession wait longer, and after a few the screen stops and says so.
     private function newCallAfterLoss() as Void {
+        var now = _env.now();
+        var recent = [] as Array<Number>;
+        for (var i = 0; i < _lossTimes.size(); i++) {
+            if (now - _lossTimes[i] < LOSS_WINDOW_MS) {
+                recent.add(_lossTimes[i]);
+            }
+        }
+        recent.add(now);
+        _lossTimes = recent;
         resetCall();
-        setNotice("Reconnecting");
+        var n = recent.size();
+        if (n >= MAX_LOSSES) {
+            stalled = "The server keeps losing the call";
+            Trace.add("calls_lost", {"n" => n});
+        } else {
+            if (n >= 2) {
+                var wait = 2000 * (1 << (n - 2));
+                _lanes[OPEN].notBefore = now + (wait > 8000 ? 8000 : wait);
+            }
+            setNotice("Reconnecting");
+        }
     }
 
     private function resetCall() as Void {
@@ -991,6 +1187,7 @@ class CallClient {
         _afterPress = 0;
         _turn = 0;
         _turnSent = false;
+        _turnSentPoll = -1;
         engine = "";
         heard = "";
         playbackActive = false;

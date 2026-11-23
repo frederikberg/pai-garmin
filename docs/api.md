@@ -69,7 +69,7 @@ The Computer screen holds one call at a time over plain requests. All routes are
 | `GET …/call/{id}/events?after=<cursor>&wait=<s>` | long-poll, `wait` is 10: `{"cursor": c, "events": [...]}` with only the events after `after` |
 | `GET …/call/{id}/piece/{n}` | `application/octet-stream`, raw PCM s16le 16 kHz mono; `404` for a piece that was cleared or already played |
 | `POST …/call/{id}/played` `{"n": <k>}` | `200 {}`, piece `k` played through |
-| `POST …/call/{id}/log` `{"lines": [{"t": <ms>, "ev": "<name>", …}]}` | `200 {}`, what the watch saw: request errors with their codes, retries, playback and capture errors, free memory |
+| `POST …/call/{id}/log` `{"sent_t": <ms>, "lines": [{"t": <ms>, "ev": "<name>", …}]}` | `200 {}`, what the watch saw: a device line at the start, request errors with their codes and the first retries, round trips of slow requests (and of every 20th), the first chunk of a turn (size, whether it starts with `OggS`), the first playback and its states, capture and playback errors, free memory. `t` and `sent_t` are the watch's uptime in milliseconds, so a late batch can be placed in time. After an overflow the first 20 lines stay and a `log_dropped` line counts the rest |
 | `DELETE …/call/{id}` | `200 {}`, hangs up (also for a call that already ended) |
 
 A call the server no longer knows answers every route with `404`, and the watch then opens a new call. A call that ended answers audio, command, played and piece with `404` while its events still work until the watch has seen `ended`; `DELETE` answers `200`. `401` is the watch key being rejected and stops the screen with that message.
