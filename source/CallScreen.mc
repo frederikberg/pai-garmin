@@ -25,6 +25,9 @@ module CallScreen {
         var fatal = c.fatal;
         var ended = c.endedReason;
         var stalled = c.stalled;
+        if (c.inSession()) {
+            f.title = c.sessionTitle.length() > 0 ? c.sessionTitle : "Session";
+        }
         if (c.closed()) {
             f.headline = "Hanging up";
             f.color = Graphics.COLOR_LT_GRAY;
@@ -69,6 +72,9 @@ module CallScreen {
         } else {
             f.headline = "Ready";
             f.hint = "Start: speak";
+            if (c.inSession()) {
+                f.body = "Back: Computer";
+            }
         }
         var notice = c.notice;
         if (notice != null) {
