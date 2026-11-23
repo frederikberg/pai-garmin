@@ -16,10 +16,14 @@
 // through Garmin's image service, which cannot reach a local server.
 // Switch it on GET /__stub/weather?name=<weather scenario>.
 //
-// POST /api/watch/voice/turn answers every clip with a short beep WAV (16 kHz, or 8 kHz for
-// out=wav8) and logs the clip's
-// content type and size. VOICE_DELAY_MS delays the answer; switch it on
-// GET /__stub/voice-delay?ms=<ms>.
+// The Computer call (/api/watch/voice/call...) is simulated: opening it queues the state and one ready
+// piece; the audio of a turn must arrive with consecutive seq numbers (a gap answers 409); the press
+// that ends a turn makes the stub "think", then answer with three pieces and sentences; a press during
+// an answer clears it. Every watch log line is printed. Faults for the next N call requests, on
+// GET /__stub/call-fail?mode=<503|503after|hang>&count=<N>[&path=<substring>][&ms=<hang ms>]
+// (503after handles the request, then answers 503, so the watch repeats a request the server already
+// has); GET /__stub/call-expire forgets every call, so the watch gets 404 and opens a new one;
+// GET /__stub/call-think?ms=<ms> sets how long it thinks before speaking; GET /__stub/call-end?reason=<text> ends every call; GET /__stub/call-owner?on=1 answers the open with 403 owner_only.
 const port = Number(process.env.PORT ?? 8099)
 const key = process.env.WATCH_KEY ?? 'stub-key'
 let scenario = process.env.SCENARIO ?? 'alarms'
@@ -30,32 +34,6 @@ type Alarm = { id: string; name: string; fire_at: string; created_at: string; so
 // GET /__stub/delay?ms=<ms>.
 let alarmDelayMs = Number(process.env.ALARM_DELAY_MS ?? 0)
 let weather = process.env.WEATHER ?? 'rain_soon'
-let voiceDelayMs = Number(process.env.VOICE_DELAY_MS ?? 0)
-
-// A mono 16-bit PCM WAV holding a 440 Hz tone of the given length.
-function beepWav(rate: number, seconds: number): Uint8Array {
-  const samples = Math.round(rate * seconds)
-  const out = new DataView(new ArrayBuffer(44 + samples * 2))
-  const text = (at: number, s: string) => [...s].forEach((c, i) => out.setUint8(at + i, c.charCodeAt(0)))
-  text(0, 'RIFF')
-  out.setUint32(4, 36 + samples * 2, true)
-  text(8, 'WAVEfmt ')
-  out.setUint32(16, 16, true)
-  out.setUint16(20, 1, true)
-  out.setUint16(22, 1, true)
-  out.setUint32(24, rate, true)
-  out.setUint32(28, rate * 2, true)
-  out.setUint16(32, 2, true)
-  out.setUint16(34, 16, true)
-  text(36, 'data')
-  out.setUint32(40, samples * 2, true)
-  for (let i = 0; i < samples; i++) {
-    const fade = Math.min(1, i / (rate * 0.02), (samples - i) / (rate * 0.02))
-    out.setInt16(44 + i * 2, Math.round(Math.sin((2 * Math.PI * 440 * i) / rate) * 12000 * fade), true)
-  }
-  return new Uint8Array(out.buffer)
-}
-
 type Half = Record<string, unknown>
 const iso = (minutes: number) => new Date(Date.now() + minutes * 60000).toISOString()
 const downHalf = (reason: string): Half => ({ chance: null, verdict: 'unknown', reason })
@@ -116,6 +94,199 @@ function weatherAnswer(name: string) {
   }
 }
 
+
+// ---- the Computer call
+
+const RATE = 16000
+// raw s16le mono PCM of a sine tone with short fades
+function tonePcm(freq: number, seconds: number): Uint8Array {
+  const samples = Math.round(RATE * seconds)
+  const out = new DataView(new ArrayBuffer(samples * 2))
+  for (let i = 0; i < samples; i++) {
+    const fade = Math.min(1, i / (RATE * 0.02), (samples - i) / (RATE * 0.02))
+    out.setInt16(i * 2, Math.round(Math.sin((2 * Math.PI * freq * i) / RATE) * 9000 * fade), true)
+  }
+  return new Uint8Array(out.buffer)
+}
+
+type CallEvent = Record<string, unknown> & { i: number }
+type Call = {
+  id: string
+  events: CallEvent[]
+  waiters: (() => void)[]
+  expected: Map<number, number>
+  bytes: number
+  chunks: number
+  presses: Set<number>
+  state: string
+  pieces: Map<number, Uint8Array>
+  nextPiece: number
+  played: Set<number>
+  generation: number
+  timers: ReturnType<typeof setTimeout>[]
+}
+const calls = new Map<string, Call>()
+let ownerOnly = false
+// how long the stub "thinks" before it speaks; GET /__stub/call-think?ms=<ms>
+let thinkMs = 900
+let fail: { mode: string; count: number; path: string; ms: number } = { mode: '', count: 0, path: '', ms: 0 }
+let logLines = 0
+
+function emit(call: Call, event: Record<string, unknown>) {
+  const last = call.events.length ? call.events[call.events.length - 1].i : 0
+  call.events.push({ ...event, i: last + 1 })
+  const waiting = call.waiters.splice(0)
+  waiting.forEach((wake) => wake())
+}
+function setState(call: Call, state: string) {
+  call.state = state
+  emit(call, { state })
+}
+function addPiece(call: Call, freq: number, seconds: number, text?: string) {
+  const n = call.nextPiece++
+  call.pieces.set(n, tonePcm(freq, seconds))
+  emit(call, { piece: n, ref: `r${n}`, ms: Math.round(seconds * 1000) })
+  if (text) emit(call, { said: text, ref: `r${n}` })
+}
+function later(call: Call, ms: number, fn: () => void) {
+  const generation = call.generation
+  call.timers.push(setTimeout(() => generation === call.generation && fn(), ms))
+}
+function answer(call: Call) {
+  setState(call, 'generating')
+  emit(call, { heard: `Stub heard ${call.bytes} bytes in ${call.chunks} chunks.` })
+  later(call, thinkMs, () => {
+    setState(call, 'speaking')
+    const words = ['This is a stub answer', 'in three pieces,', 'for the watch to play.']
+    words.forEach((text, k) => later(call, 300 + k * 500, () => addPiece(call, 330 + k * 110, 0.8, text)))
+    later(call, 300 + 3 * 500 + 200, () => setState(call, 'listening'))
+  })
+}
+function openCall(): Call {
+  const call: Call = {
+    id: crypto.randomUUID(), events: [], waiters: [], expected: new Map(), bytes: 0, chunks: 0, presses: new Set(),
+    state: 'ready', pieces: new Map(), nextPiece: 0, played: new Set(), generation: 0, timers: [],
+  }
+  calls.set(call.id, call)
+  setState(call, 'ready')
+  addPiece(call, 440, 0.4)
+  setState(call, 'listening')
+  return call
+}
+function dropCall(call: Call) {
+  call.generation++
+  call.timers.forEach(clearTimeout)
+  calls.delete(call.id)
+}
+
+async function callRoute(req: Request, url: URL, path: string): Promise<Response> {
+  const sub = path.slice('/api/watch/voice/call'.length)
+  if (fail.count > 0 && (fail.path === '' || path.includes(fail.path))) {
+    fail.count--
+    console.log(`  injected ${fail.mode}`)
+    if (fail.mode === 'hang') {
+      await new Promise((resolve) => setTimeout(resolve, fail.ms || 40000))
+      return json({ detail: 'late' }, 504)
+    }
+    if (fail.mode === '503') return json({ detail: 'injected' }, 503)
+    // 503after falls through: the request is handled, the answer is replaced below
+    const real = await callRoute2(req, url, sub)
+    void real
+    return json({ detail: 'injected' }, 503)
+  }
+  return callRoute2(req, url, sub)
+}
+
+async function callRoute2(req: Request, url: URL, sub: string): Promise<Response> {
+  if (sub === '' && req.method === 'POST') {
+    if (ownerOnly) return json({ detail: 'owner_only' }, 403)
+    const call = openCall()
+    return json({ call: call.id }, 201)
+  }
+  const m = sub.match(/^\/([^/]+)(\/.*)?$/)
+  if (!m) return json({ detail: 'not found' }, 404)
+  const call = calls.get(m[1])
+  const rest = m[2] ?? ''
+  if (rest === '' && req.method === 'DELETE') {
+    if (call) dropCall(call)
+    return json({})
+  }
+  if (!call) return json({ detail: 'unknown call' }, 404)
+
+  if (rest === '/audio' && req.method === 'POST') {
+    const turn = Number(url.searchParams.get('turn'))
+    const seq = Number(url.searchParams.get('seq'))
+    const body = new Uint8Array(await req.arrayBuffer())
+    const expected = call.expected.get(turn) ?? 0
+    console.log(`  audio turn ${turn} seq ${seq} ${body.length} B ${req.headers.get('content-type')} (expected ${expected})`)
+    if (seq > expected) return json({ next_seq: expected }, 409)
+    if (seq === expected) {
+      call.expected.set(turn, expected + 1)
+      call.bytes += body.length
+      call.chunks += 1
+    }
+    return json({ next_seq: call.expected.get(turn) })
+  }
+  if (rest === '/command' && req.method === 'POST') {
+    const body = (await req.json().catch(() => ({}))) as { action?: string; press?: number }
+    const press = Number(body.press)
+    if (body.action !== 'press' || !Number.isInteger(press)) return json({ detail: 'bad command' }, 422)
+    console.log(`  press ${press} in state ${call.state}`)
+    if (call.presses.has(press)) return json({})
+    call.presses.add(press)
+    const unheard = [...call.pieces.keys()].some((n) => !call.played.has(n))
+    if (call.state === 'generating' || call.state === 'speaking' || unheard) {
+      call.generation++
+      call.timers.forEach(clearTimeout)
+      const unplayed = [...call.pieces.keys()].filter((n) => !call.played.has(n)).length
+      emit(call, { clear: true, dropped: unplayed })
+      call.pieces.forEach((_, n) => !call.played.has(n) && call.pieces.delete(n))
+      setState(call, 'listening')
+    } else {
+      answer(call)
+    }
+    return json({})
+  }
+  if (rest === '/events' && req.method === 'GET') {
+    const after = Number(url.searchParams.get('after') ?? 0)
+    const wait = Math.min(Number(url.searchParams.get('wait') ?? 0), 15)
+    const fresh = () => call.events.filter((e) => e.i > after)
+    if (fresh().length === 0 && wait > 0) {
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, wait * 1000)
+        call.waiters.push(() => {
+          clearTimeout(timer)
+          resolve()
+        })
+      })
+    }
+    const events = fresh()
+    return json({ cursor: events.length ? events[events.length - 1].i : after, events })
+  }
+  const piece = rest.match(/^\/piece\/(\d+)$/)
+  if (piece && req.method === 'GET') {
+    const n = Number(piece[1])
+    const data = call.pieces.get(n)
+    if (!data || call.played.has(n)) return json({ detail: 'gone' }, 404)
+    return new Response(data, { headers: { 'content-type': 'application/octet-stream' } })
+  }
+  if (rest === '/played' && req.method === 'POST') {
+    const body = (await req.json().catch(() => ({}))) as { n?: number }
+    console.log(`  played ${body.n}`)
+    if (typeof body.n === 'number') call.played.add(body.n)
+    return json({})
+  }
+  if (rest === '/log' && req.method === 'POST') {
+    const body = (await req.json().catch(() => ({}))) as { lines?: unknown[] }
+    for (const line of body.lines ?? []) {
+      logLines++
+      console.log(`  watch log: ${JSON.stringify(line)}`)
+    }
+    return json({})
+  }
+  return json({ detail: 'not found' }, 404)
+}
+
 let alarms: Alarm[] = []
 let ringing: (Alarm & { started_at: string; ends_at: string })[] = []
 let nextId = 1
@@ -142,6 +313,8 @@ const sorted = () => [...alarms].sort((a, b) => a.fire_at.localeCompare(b.fire_a
 
 Bun.serve({
   port,
+  // a long-poll waits up to 15 s
+  idleTimeout: 30,
   async fetch(req) {
     const url = new URL(req.url)
     const path = url.pathname
@@ -155,9 +328,30 @@ Bun.serve({
       alarmDelayMs = Number(url.searchParams.get('ms') ?? 0)
       return json({ alarmDelayMs })
     }
-    if (path === '/__stub/voice-delay') {
-      voiceDelayMs = Number(url.searchParams.get('ms') ?? 0)
-      return json({ voiceDelayMs })
+    if (path === '/__stub/call-fail') {
+      fail = {
+        mode: url.searchParams.get('mode') ?? '503', count: Number(url.searchParams.get('count') ?? 1),
+        path: url.searchParams.get('path') ?? '', ms: Number(url.searchParams.get('ms') ?? 0),
+      }
+      return json(fail)
+    }
+    if (path === '/__stub/call-expire') {
+      const n = calls.size
+      calls.forEach(dropCall)
+      return json({ expired: n })
+    }
+    if (path === '/__stub/call-end') {
+      const reason = url.searchParams.get('reason') ?? 'idle'
+      calls.forEach((call) => emit(call, { ended: reason }))
+      return json({ ended: reason })
+    }
+    if (path === '/__stub/call-think') {
+      thinkMs = Number(url.searchParams.get('ms') ?? 900)
+      return json({ thinkMs })
+    }
+    if (path === '/__stub/call-owner') {
+      ownerOnly = url.searchParams.get('on') === '1'
+      return json({ ownerOnly })
     }
     if (path === '/__stub/weather') {
       weather = url.searchParams.get('name') ?? 'rain_soon'
@@ -167,17 +361,7 @@ Bun.serve({
     const auth = req.headers.get('authorization')
     if (scenario === 'rejected' || auth !== `Bearer ${key}`) return json({ detail: 'key_rejected' }, 401)
 
-    if (path === '/api/watch/voice/turn' && req.method === 'POST') {
-      const clip = new Uint8Array(await req.arrayBuffer())
-      const out = url.searchParams.get('out') ?? 'wav'
-      console.log(`  clip ${clip.length} B ${req.headers.get('content-type')}, out=${out}`)
-      if (clip.length === 0) return json({ detail: 'empty' }, 400)
-      if (!['wav', 'wav8'].includes(out)) return json({ detail: 'unknown out' }, 422)
-      if (voiceDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, voiceDelayMs))
-      return new Response(beepWav(out === 'wav8' ? 8000 : 16000, 0.6), {
-        headers: { 'content-type': 'application/octet-stream' },
-      })
-    }
+    if (path.startsWith('/api/watch/voice/call')) return callRoute(req, url, path)
     if (path === '/api/watch/weather' && req.method === 'GET') {
       if (weather === 'key_rejected') return json({ detail: 'key_rejected' }, 401)
       if (weather === 'server_error') return json({ detail: 'unavailable' }, 503)

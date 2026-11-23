@@ -13,7 +13,7 @@ A Garmin watch app for your PAI Cloud server: see whether it will rain, and set,
 [![CI](https://github.com/frederikberg/pai-garmin/actions/workflows/ci.yml/badge.svg)](https://github.com/frederikberg/pai-garmin/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-Open it from the glance list. If an alarm rings, opening the app stops it. Otherwise a small menu opens. On watches with audio its first entry, Computer, is an experiment: record a clip with Start, press Start again to send it to the server and hear the answer. Below it the weather shows the chance of rain now and later, in two rows; the alarms are one entry further down: pick an hour and a minute, press Start, done. What you set on the watch shows up on your phone and in the web app, and the other way round.
+Open it from the glance list. If an alarm rings, opening the app stops it. Otherwise a small menu opens. On watches with audio its first entry, Computer, starts a spoken call with the server: it listens, Start sends what you said, the answer plays, and Start during the answer cuts it off. Below it the weather shows the chance of rain now and later, in two rows; the alarms are one entry further down: pick an hour and a minute, press Start, done. What you set on the watch shows up on your phone and in the web app, and the other way round.
 
 <p align="center">
   <img src="docs/images/overview.png" alt="The watch app: the weather, a ringing alarm, the alarm list and the time entry" width="100%">
