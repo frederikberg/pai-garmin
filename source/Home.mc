@@ -22,7 +22,7 @@ class HomeDelegate extends WatchUi.Menu2InputDelegate {
 
     function onSelect(item as WatchUi.MenuItem) as Void {
         if (item.getId() == :computer) {
-            var computer = new ComputerView();
+            var computer = new ComputerView(false);
             WatchUi.pushView(computer, new ComputerDelegate(computer), WatchUi.SLIDE_LEFT);
         } else if (item.getId() == :weather) {
             var view = new WeatherView();

@@ -48,8 +48,8 @@ module CallLogic {
 
 // What the watch saw during a call, kept for the server's log route in bounded batches. When the
 // buffer overflows, the first lines (the cause of an outage) stay and the oldest of the later ones go.
-// The last lines are also kept in the app's storage at the end of a turn and at exit, to be sent at
-// the next launch if the run did not get to send them.
+// The last lines are also kept in the app's storage once a turn and at exit, and the next launch puts
+// them at the front of its own log if the run did not get to send them.
 module Trace {
     const MAX_LINES = 120;
     const KEEP_FIRST = 20;
@@ -64,6 +64,8 @@ module Trace {
     var debugOn as Boolean = false;
     // a Computer call is running
     var active as Boolean = false;
+    // the app's uptime clock when it started
+    var bornAt as Number = 0;
 
     function add(ev as String, fields as Dictionary?) as Void {
         var line = {"t" => System.getTimer(), "ev" => ev} as Dictionary<String, Object>;
@@ -127,13 +129,31 @@ module Trace {
         debug("persist", {"ms" => System.getTimer() - t0, "lines" => keep.size()});
     }
 
-    // What the previous run stored, or null.
-    function stored() as Array? {
-        var value = Storage.getValue(STORE_KEY);
-        return value instanceof Array && value.size() > 0 ? value : null;
+    // What this run could not send is kept for the next launch; nothing is kept when all of it went.
+    function keep() as Void {
+        if (lines.size() > 0) {
+            persist();
+        } else {
+            Storage.deleteValue(STORE_KEY);
+        }
     }
 
-    function clearStored() as Void {
-        Storage.deleteValue(STORE_KEY);
+    // At launch: the lines the previous run kept go to the front of the log, closed by a
+    // "stored_end" line, and leave with this run's first batches.
+    function restore() as Void {
+        var value = Storage.getValue(STORE_KEY);
+        if (value instanceof Array && value.size() > 0) {
+            var old = [] as Array<Dictionary<String, Object>>;
+            for (var i = 0; i < value.size(); i++) {
+                var line = value[i];
+                if (line instanceof Dictionary) {
+                    old.add(line as Dictionary<String, Object>);
+                }
+            }
+            old.add({"t" => System.getTimer(), "ev" => "stored_end", "lines" => old.size()} as Dictionary<String, Object>);
+            old.addAll(lines);
+            lines = old;
+            Storage.deleteValue(STORE_KEY);
+        }
     }
 }

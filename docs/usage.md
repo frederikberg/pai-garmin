@@ -8,13 +8,13 @@ The key travels through Garmin's app settings, so revoke it on the server if you
 
 ## Opening it
 
-From the glance list: the glance shows the next alarm (or that one rings), and Start opens the app. From the app list the app works the same way.
+From the app list, or a hot key set to the app, a watch with audio opens straight into *Computer* and listens: no press is needed. From the glance list (the glance shows the next alarm, or that one rings, and Start opens the app) the menu comes first. The *Open with* setting in Garmin Connect changes this: *Computer* always opens Computer, *Menu* always the menu.
 
-The menu comes first and appears at once, without waiting for the network: *Computer* (selected, only on watches with audio), *Weather* and *Alarm*. Start opens the screen you chose, and only then does anything go to the server.
+The menu appears at once, without waiting for the network: *Computer* (selected, only on watches with audio), *Weather* and *Alarm*. Start opens the screen you chose, and only then does anything go to the server.
 
 Right after the app opens it also checks, in the background, whether an alarm rings. The check goes out first, so a screen opened in the meantime shows "Loading..." for a moment and its request follows once the check is over. If nothing rings, the check is invisible. If an alarm rings, the app stops every ringing alarm by itself, drops whatever you had just opened and shows the alarm's time and name with "Stopping..." and then "Alarm stopped"; Start returns to the menu. If stopping fails, the screen says why and Start tries again. The glance only shows that an alarm rings; it never stops it.
 
-Back leaves a screen; Back on the first one exits the app.
+Back leaves a screen; Back on the first one exits the app. When the app opened straight into Computer, Back there hangs up and exits; the menu is one Up hold away (*Menu*).
 
 <p align="center">
   <img src="images/ringing.png" alt="The screen after a ringing alarm was stopped: Alarm stopped, 14:39, Alarm, with the hint Enter: menu" width="30%">
@@ -23,9 +23,9 @@ Back leaves a screen; Back on the first one exits the app.
 
 ## Computer
 
-Talking to the server from the wrist, on watches with audio. Opening *Computer* starts a call, and the watch listens at once, without waiting for the call to be up: *Getting ready* shows while the microphone starts (about two seconds), then one short buzz says *speak now* and the screen says *Speak* with a red ring and the time: the microphone is recording. Start sends the turn: two short buzzes say it was taken; the screen says *Sending* until the server has it. Taps on the screen do nothing. While the answer is generated the screen says *Thinking* and shows what the server heard; while it speaks it says *Speaking*. When the answer has finished playing the watch starts the microphone again, and the same short buzz says when you can speak. A low falling sound with a long buzz means the call stopped; the reason is on the screen. Start during the answer cuts it off at once and records again. Up and Down change the volume, which is kept for the next time. Back hangs up: the screen says so and leaves once the server has heard it. Holding Up opens a menu with *New call*, which drops the current call and starts a fresh one.
+Talking to the server from the wrist, on watches with audio. Opening *Computer* starts a call, and the watch listens at once, without waiting for the call to be up. The screen is one word in a ring of the state's colour: a grey *Wait* while the microphone starts (about two seconds), then one short buzz says *speak now* and a green *Speak* shows: the microphone is recording. Start sends the turn: two short buzzes say it was taken; a yellow *Sending* shows until the server has it. Taps on the screen do nothing. While the answer is generated the screen says *Thinking* (yellow) and shows what the server heard; while it plays it says *Speaking* (blue). Red means something stopped, with the reason underneath. When the answer has finished playing the watch starts the microphone again, and the same short buzz says when you can speak. A low falling sound with a long buzz means the call stopped; the reason is on the screen. Start during the answer cuts it off at once and records again. Up and Down change the volume, which shows for a moment and is kept for the next time. Back hangs up: the screen says so and leaves once the server has heard it, two seconds at most. Holding Up opens a menu with *New call*, which drops the current call and starts a fresh one, and, when the app opened straight into Computer, *Menu*, which hangs up and shows the menu.
 
-The line near the bottom shows the volume and the state of the link. When requests fail the watch repeats them with growing waits, keeps what you said (up to about half a minute of speech) while the link is down, carries on with the same call when it returns and opens a new call when the server no longer knows the old one; the line then names what is being repeated and how often. Everything that goes wrong, with the codes Connect IQ reports, is sent to the server's log for the call. If the server ends the call, the screen says why and Start opens a new one. A key that is not the owner's is told that Computer is only for the owner. When recording fails several times in a row (the microphone, or audio the server refuses) it stops and says why until Start tries again; a server that keeps losing the call does the same.
+When requests fail the watch repeats them with growing waits, keeps what you said (up to about half a minute of speech) while the link is down, carries on with the same call when it returns and opens a new call when the server no longer knows the old one; an orange line near the bottom then names what is being repeated and how often. Everything that goes wrong, with the codes Connect IQ reports, is sent to the server's log for the call. If the server ends the call, the screen says why and Start opens a new one. A key that is not the owner's is told that Computer is only for the owner. When recording fails several times in a row (the microphone, or audio the server refuses) it stops and says why until Start tries again; a server that keeps losing the call does the same.
 
 The app settings in Garmin Connect also have a *Mic filter* switch (noise and echo reduction on the microphone, off by default). The app settings in Garmin Connect have a *Debug log* switch. With it on, the trace of a Computer call is detailed (a line for every request and every piece), which shows where time goes; either way a turn leaves one summary line with its timings besides the errors.
 
@@ -58,8 +58,8 @@ The Alarm screen lists *+ New* first, then the armed alarms, soonest first, each
 |---|---|---|
 | Computer | Start | send the turn being recorded; during the answer, cut it and record again |
 | Computer | Up / Down | volume up / down |
-| Computer | hold Up | menu with New call |
-| Computer | Back | hang up |
+| Computer | hold Up | menu with New call, and Menu when the app opened here |
+| Computer | Back | hang up; exits the app when it opened here |
 | list | Down / Up | move through the list |
 | list, on *+ New* | Start | create an alarm |
 | list, on an alarm | Start | change its time |

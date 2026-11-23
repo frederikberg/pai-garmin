@@ -41,6 +41,20 @@ module Draw {
         area.draw(dc);
     }
 
+    // Text centred on y (percent of the height) in the first font whose width fits the round
+    // screen at that height, or the last one when none does.
+    function fitted(dc as Graphics.Dc, y as Number, text as String, fonts as Array<Graphics.FontType>) as Void {
+        var cy = dc.getHeight() * y / 100;
+        var font = fonts[fonts.size() - 1];
+        for (var i = 0; i < fonts.size(); i++) {
+            if (dc.getTextWidthInPixels(text, fonts[i]) <= widthAt(dc, cy, dc.getFontHeight(fonts[i]))) {
+                font = fonts[i];
+                break;
+            }
+        }
+        dc.drawText(dc.getWidth() / 2, cy, font, text, Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER);
+    }
+
     // How wide a line of text centred on cy can be without touching the edge of the screen.
     function widthAt(dc as Graphics.Dc, cy as Number, lineHeight as Number) as Number {
         var round = System.getDeviceSettings().screenShape == System.SCREEN_SHAPE_ROUND;

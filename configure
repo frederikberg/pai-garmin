@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Writes config/properties.xml, the default settings of a local build (local.jungle), and is not tracked.
 #
-#   PAI_URL=https://pai.example.com PAI_WATCH_KEY=<key> ./configure
+#   PAI_URL=https://pai.example.com PAI_WATCH_KEY=<key> [PAI_OPEN_WITH=<0|1|2>] ./configure
 set -euo pipefail
 
 : "${PAI_URL:?set PAI_URL to the base URL of the server}"
@@ -9,6 +9,8 @@ set -euo pipefail
 
 [[ $PAI_URL =~ ^https?://[A-Za-z0-9._~:/%-]+$ ]] || { echo "PAI_URL is not a plain http(s) URL" >&2; exit 1; }
 [[ $PAI_WATCH_KEY =~ ^[A-Za-z0-9._~+/=-]+$ ]] || { echo "PAI_WATCH_KEY has characters outside A-Za-z0-9._~+/=-" >&2; exit 1; }
+
+[[ ${PAI_OPEN_WITH:-0} =~ ^[012]$ ]] || { echo "PAI_OPEN_WITH is 0 (Computer unless opened from the glance list), 1 (Computer) or 2 (menu)" >&2; exit 1; }
 
 target="$(dirname "$0")/config/properties.xml"
 mkdir -p "$(dirname "$target")"
@@ -19,6 +21,7 @@ cat > "$target" <<XML
     <property id="watchKey" type="string">$PAI_WATCH_KEY</property>
     <property id="debugLog" type="boolean">true</property>
     <property id="micFilter" type="boolean">false</property>
+    <property id="openWith" type="number">${PAI_OPEN_WITH:-0}</property>
 </properties>
 XML
 echo "wrote $target"

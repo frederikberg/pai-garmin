@@ -238,6 +238,7 @@ class CallClient {
     private var _soundMs as Number = -1;
     private var _stored as Boolean = false;
     private var _stopping as Boolean = false;
+    private var _micSaid as Boolean = false;
     private var _lastTick as Number = 0;
     private var _logToCall as Boolean = true;
     private var _orphanHold as Boolean = false;
@@ -250,7 +251,6 @@ class CallClient {
     private var _fatalNotSet as Boolean = false;
     private var _bufferFullLogged as Boolean = false;
     private var _requests as Number = 0;
-    private var _shownSecond as Number = -1;
     private var _autoAt as Number = 0;
 
     private var _press as Number = 0;
@@ -268,7 +268,6 @@ class CallClient {
     private var _holdUntil as Number = 0;
     private var _commands as Array<Dictionary<String, Object>> = [];
     private var _hangId as String? = null;
-    private var _closeCall as String? = null;
     private var _logSent as Number = 0;
     private var _lastLog as Number = 0;
     private var _lastMem as Number = 0;
@@ -369,7 +368,6 @@ class CallClient {
         }
         recalcInflight();
         _hangId = _call;
-        _closeCall = _call;
         _call = null;
         _lanes[HANG].failures = 0;
         _lanes[HANG].notBefore = 0;
@@ -404,6 +402,11 @@ class CallClient {
             recordingSince = _env.now();
             _micMs = recordingSince - _turnStartedAt;
             Trace.debug("capture_state", {"state" => "data", "ms" => _micMs});
+            if (!_micSaid) {
+                // the first time after launch: how long from the app's start to "speak"
+                _micSaid = true;
+                Trace.add("mic_live", {"since_launch_ms" => recordingSince - Trace.bornAt});
+            }
             _io.cue.invoke(CallLogic.CUE_YOUR_TURN);
             changed();
         }
@@ -529,14 +532,20 @@ class CallClient {
         return _pieces.size() > 0 || _lanes[PIECE].busy;
     }
 
-    // "link ok" or the failing lane with its count.
-    function linkText() as String {
+    // The failing lane with its count; empty while every request gets through.
+    function linkTrouble() as String {
         for (var i = 0; i < _lanes.size(); i++) {
             if (_lanes[i].failures > 0 && i != LOG) {
                 return _lanes[i].name + " retry " + _lanes[i].failures;
             }
         }
-        return "link ok";
+        return "";
+    }
+
+    // A short message of the screen's own, shown like the server's notices.
+    function say(text as String) as Void {
+        setNotice(text);
+        changed();
     }
 
     function hasCall() as Boolean {
@@ -773,10 +782,6 @@ class CallClient {
         }
         autoRecord(now);
         pump();
-        if (recording && (now - recordingSince) / 1000 != _shownSecond) {
-            _shownSecond = (now - recordingSince) / 1000;
-            changed();
-        }
     }
 
     // The hang-up is over when the server has heard it, or when it has had its time: then the screen
@@ -1129,7 +1134,6 @@ class CallClient {
             if (id instanceof String && _closing) {
                 // the screen has left: the call that just opened is hung up
                 _hangId = id;
-                _closeCall = id;
                 return true;
             }
             if (id instanceof String) {
