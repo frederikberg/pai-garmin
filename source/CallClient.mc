@@ -158,8 +158,6 @@ class CallClient {
     const NEXT_WAIT_S = 1;
     // the optional features this app asks the server for
     const FEATURES = ["end_on_audio", "played_param", "piece_wait", "no_speech", "short_first_piece"];
-    // the buzz for a sent turn comes this long after the press even if the capture has not said it stopped
-    const SENT_CUE_MS = 300;
     // a gap between clock ticks longer than this is traced
     const STALL_MS = 1500;
     // the length of a piece the server did not give one for
@@ -258,8 +256,8 @@ class CallClient {
     // request in flight
     private var _endPress as Number = 0;
     private var _bodyEnd as Number = 0;
-    // the played report riding on the events or piece request in flight
-    private var _riding as Number = -1;
+    // the played report riding on the events request and on the piece request in flight
+    private var _riding as Array<Number> = [-1, -1];
     // the answer's first piece is asked for before the events announce it; after a wait that brought
     // none, the events are asked once before the next
     private var _expectPiece as Boolean = false;
@@ -358,6 +356,7 @@ class CallClient {
             cut();
         } else if (!_endPending && !_restartTurn) {
             // between turns, Start begins the recording that did not begin by itself
+            _turnSent = false;
             startTurn();
         } else {
             return false;
@@ -382,6 +381,7 @@ class CallClient {
         resetCall();
         _hangId = old;
         endedReason = null;
+        _answered = false;
         micFirst();
         startTurn();
     }
@@ -474,8 +474,8 @@ class CallClient {
         }
     }
 
-    // The turn is over for the microphone: a short cue says the press was taken, when the capture has
-    // stopped or a moment after the press, whichever comes first.
+    // The turn is over for the microphone: a short cue says the press was taken. It comes when the
+    // capture has stopped (or was given up waiting for), so the buzz is never in the recording.
     private function cueSent() as Void {
         if (_endPending && !_cuedSent && _turnBytes > 0) {
             _cuedSent = true;
@@ -527,6 +527,10 @@ class CallClient {
     // microphone takes a moment of its own to deliver.
     function answerEnded() as Void {
         autoRecord(_env.now());
+        if (inSession() && engine.equals("wake") && !recording && !moreToPlay() && !_closing) {
+            // a session that waits records nothing by itself: the signal says Start is his move
+            _io.cue.invoke(CallLogic.CUE_YOUR_TURN);
+        }
     }
 
     function playbackFailed(code as Number) as Void {
@@ -809,6 +813,10 @@ class CallClient {
     }
 
     private function busyAnswering() as Boolean {
+        if (inSession()) {
+            // a session answers whenever it does: only what plays can be cut
+            return playbackActive || moreToPlay();
+        }
         return _turnSent || engine.equals("generating") || engine.equals("speaking") || playbackActive || moreToPlay();
     }
 
@@ -860,9 +868,6 @@ class CallClient {
             fatal = null;
             _fatalNotSet = false;
             startTurn();
-        }
-        if (_endPending && now - _pressAt >= SENT_CUE_MS) {
-            cueSent();
         }
         endPlaybackByTimer(now);
         if (now - _lastMem > MEM_EVERY_MS) {
@@ -1073,10 +1078,10 @@ class CallClient {
         _pollNo = _pollsSent;
         _lastEventsAt = _env.now();
         var params = {"after" => _cursor, "wait" => turnOpen() || _expectPiece ? 0 : POLL_WAIT_S} as Dictionary<Object, Object>;
-        _riding = -1;
+        _riding[0] = -1;
         if (offers("played_param") && _playedQueue.size() > 0) {
-            _riding = _playedQueue[0];
-            params["played"] = _riding;
+            _riding[0] = _playedQueue[0];
+            params["played"] = _riding[0];
         }
         go(EVENTS, Communications.HTTP_REQUEST_METHOD_GET, "/" + call + "/events", params, jsonOptions(null));
     }
@@ -1121,14 +1126,18 @@ class CallClient {
     // Asks for piece n. An announced one is there; one asked for ahead of its announcement (spec) is
     // waited for on the server, which answers without a body when it has not come in time.
     private function fetchPiece(call as String, n as Number, ms as Number, spec as Boolean) as Void {
+        if (spec != _fetchSpec) {
+            // the tries of a piece asked for ahead do not count against an announced one
+            _pieceTries = 0;
+        }
         _fetchN = n;
         _fetchLen = ms;
         _fetchSpec = spec;
         var query = spec ? "?wait=" + (_ahead == AHEAD_PIECES ? PIECE_WAIT_S : NEXT_WAIT_S) : "";
-        _riding = -1;
+        _riding[1] = -1;
         if (offers("played_param") && _playedQueue.size() > 0) {
-            _riding = _playedQueue[0];
-            query += (spec ? "&" : "?") + "played=" + _riding;
+            _riding[1] = _playedQueue[0];
+            query += (spec ? "&" : "?") + "played=" + _riding[1];
         }
         var options = {
             :headers => Wire.authorization(),
@@ -1185,11 +1194,13 @@ class CallClient {
             Trace.add("rtt", {"lane" => l.name, "ms" => rtt, "bytes" => bytes, "code" => code});
         }
         var ok = code >= 200 && code < 300;
-        if ((lane == EVENTS || lane == PIECE) && _riding >= 0) {
-            if (ok && _playedQueue.size() > 0 && _playedQueue[0] == _riding) {
-                _playedQueue = _playedQueue.slice(1, null) as Array<Number>;
+        if (lane == EVENTS || lane == PIECE) {
+            // the report that rode on this request is delivered when the request was
+            var slot = lane == EVENTS ? 0 : 1;
+            if (ok && _riding[slot] >= 0) {
+                _playedQueue.remove(_riding[slot]);
             }
-            _riding = -1;
+            _riding[slot] = -1;
         }
         if (lane == EVENTS) {
             _eventsFirst = false;
@@ -1203,8 +1214,9 @@ class CallClient {
             l.failures = 0;
             l.notBefore = 0;
         } else if (lane == PIECE && _fetchSpec && !_closing && code == 404) {
-            // no piece will have that number: the events name the next one
+            // no piece will have that number, or the call is gone: the events, asked next, say which
             _expectPiece = false;
+            _lastEventsAt = 0;
         } else if (ok || code == -400 && (lane == HANG || lane == PLAYED || lane == CMD || lane == LOG)) {
             if (succeeded(lane, code, data)) {
                 l.failures = 0;
@@ -1420,9 +1432,12 @@ class CallClient {
         }
         if (lane == PIECE) {
             _pieceTries += 1;
-            if (_pieceTries >= PIECE_TRIES) {
-                Trace.add("piece_dropped", {"n" => _pieces.size() > 0 ? _pieces[0]["n"] : -1});
+            if (_pieceTries >= PIECE_TRIES && _fetchSpec) {
+                // asking ahead is given up; the events name the piece
                 _expectPiece = false;
+                _pieceTries = 0;
+            } else if (_pieceTries >= PIECE_TRIES) {
+                Trace.add("piece_dropped", {"n" => _pieces.size() > 0 ? _pieces[0]["n"] : -1});
                 nextPiece();
             }
         }
@@ -1451,6 +1466,8 @@ class CallClient {
             _playedQueue = _playedQueue.slice(1, null) as Array<Number>;
         } else if (lane == LOG) {
             Trace.confirm(_logSent);
+        } else if (lane == PIECE && _fetchSpec) {
+            _expectPiece = false;
         } else if (lane == PIECE) {
             nextPiece();
         } else if (lane == OPEN) {
@@ -1631,8 +1648,11 @@ class CallClient {
             }
             if (state.equals("generating") || state.equals("speaking")) {
                 _turnSent = false;
-            } else if (_turnSent && _commands.size() == 0 && _turnSentPoll >= 0 && _pollNo > _turnSentPoll) {
-                // listening again, in an answer to a poll sent after the press was taken: nothing to answer
+            } else if (_turnSent && _commands.size() == 0 && _turnSentPoll >= 0
+                    && (_pollNo > _turnSentPoll || (inSession() && state.equals("wake")))) {
+                // listening again, in an answer to a poll sent after the press was taken: nothing to
+                // answer. A session says "wake" the moment it has the press, and never again, so there
+                // it counts whichever poll brings it.
                 _turnSent = false;
             }
         } else if (piece instanceof Number) {
@@ -1736,7 +1756,7 @@ class CallClient {
         sessionTitle = "";
         _leaving = false;
         _backs = 0;
-        _riding = -1;
+        _riding = [-1, -1];
         _expectPiece = false;
         _eventsFirst = false;
         _fetchN = -1;
