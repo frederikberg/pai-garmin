@@ -3,9 +3,6 @@ import Toybox.Lang;
 
 // The decisions of the Computer call that need no network or audio hardware.
 module CallLogic {
-    // The sample rate of the pieces the server sends.
-    const PCM_RATE = 16000;
-
     // The wait before the next try after the n-th failure in a row, in milliseconds.
     const BACKOFF_MS = [500, 1000, 2000, 4000, 8000];
 
@@ -32,36 +29,10 @@ module CallLogic {
         return expected >= base ? "rewind" : "lost";
     }
 
-    // A 44-byte WAV header for 16-bit mono PCM of a stream whose length is not known: the player
-    // reads the samples that follow until the stream ends.
-    function wavHeader(rate as Number) as ByteArray {
-        var h = new [0]b;
-        h.addAll("RIFF".toUtf8Array() as Array);
-        h.addAll(le(0x7FFFFFFF, 4));
-        h.addAll("WAVEfmt ".toUtf8Array() as Array);
-        h.addAll(le(16, 4));
-        h.addAll(le(1, 2));
-        h.addAll(le(1, 2));
-        h.addAll(le(rate, 4));
-        h.addAll(le(rate * 2, 4));
-        h.addAll(le(2, 2));
-        h.addAll(le(16, 2));
-        h.addAll("data".toUtf8Array() as Array);
-        h.addAll(le(0x7FFFFFFF, 4));
-        return h;
-    }
-
-    function le(value as Number, bytes as Number) as Array {
-        var out = [];
-        for (var i = 0; i < bytes; i++) {
-            out.add((value >> (8 * i)) & 0xFF);
-        }
-        return out;
-    }
-
-    // Milliseconds of 16-bit mono PCM at the given rate.
-    function pcmMs(bytes as Number, rate as Number) as Number {
-        return bytes * 1000 / (rate * 2);
+    // The length in milliseconds of a complete 16 kHz mono 16-bit WAV file: 44 bytes of header, then
+    // 32 bytes per millisecond.
+    function wavMs(bytes as Number) as Number {
+        return bytes > 44 ? (bytes - 44) / 32 : 0;
     }
 }
 

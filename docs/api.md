@@ -66,8 +66,8 @@ The Computer screen holds one call at a time over plain requests. All routes are
 | `POST /api/watch/voice/call` | `201 {"call": "<id>"}` opens a call; `403 {"detail": "owner_only"}` for a key that is not the owner's |
 | `POST …/call/{id}/audio?turn=<t>&seq=<n>&after_press=<k>`, `Content-Type: audio/ogg`, body = the next bytes of the turn's Ogg Opus stream | `200 {"next_seq": n+1}`; a repeated `seq` is ignored (`200`); a gap answers `409 {"next_seq": <expected>}`; `422 bad_audio` when the turn cannot be decoded any more |
 | `POST …/call/{id}/command` `{"action": "press", "press": <n>, "turn": <t>}` | `200 {}`; a repeated press number is ignored |
-| `GET …/call/{id}/events?after=<cursor>&wait=<s>` | long-poll, `wait` is 10: `{"cursor": c, "events": [...]}` with only the events after `after` |
-| `GET …/call/{id}/piece/{n}` | `application/octet-stream`, raw PCM s16le 16 kHz mono; `404` for a piece that was cleared or already played |
+| `GET …/call/{id}/events?after=<cursor>&wait=<s>` | short poll, `wait` is 1: `{"cursor": c, "events": [...]}` with only the events after `after` |
+| `GET …/call/{id}/piece/{n}` | `application/octet-stream`, a complete WAV file (RIFF header with exact sizes, 16 kHz mono 16-bit); `404` for a piece that was cleared or already played |
 | `POST …/call/{id}/played` `{"n": <k>}` | `200 {}`, piece `k` played through |
 | `POST …/call/{id}/log` `{"sent_t": <ms>, "lines": [{"t": <ms>, "ev": "<name>", …}]}` | `200 {}`, what the watch saw: a device line at the start, request errors with their codes and the first retries, round trips of slow requests (and of every 20th), the first chunk of a turn (size, whether it starts with `OggS`), the first playback and its states, capture and playback errors, free memory. `t` and `sent_t` are the watch's uptime in milliseconds, so a late batch can be placed in time. After an overflow the first 20 lines stay and a `log_dropped` line counts the rest |
 | `DELETE …/call/{id}` | `200 {}`, hangs up (also for a call that already ended) |
@@ -87,4 +87,6 @@ Events carry their own index `i`, which the watch uses to skip what it saw. Each
 - `{"notice": {"code": "…", "text": "…"}}`, its text shown briefly on screen. `heard_nothing` (a press had nothing to answer) changes nothing else: listening goes on. `turn_timed_out` (an open turn went without a press for too long, and the server dropped what it heard) makes the watch start a new turn with a new Ogg Opus stream, `seq` 0 and `after_press` at the current press count, without a press
 - `{"ended": "<reason>"}`, the call is over; Start opens a new one
 
-The pieces play through one streaming source as 16 kHz mono PCM behind a 44-byte WAV header the watch prepends to each stream.
+Each piece plays through its own audio source, one after the other. A piece is over when the player says it stopped or, if it never does, a little after the length the event gave (`ms`, else the WAV's own); the next one starts then and the watch reports it as played. Recording begins after the last piece in the same way, without waiting for the player.
+
+The phone link carries one request at a time, so the watch sends one request at a time, in this order: a press, audio, played reports, pieces, the log when it is due (every 15 s or 20 lines, sooner after a failure, and at hang-up), the events. The events are asked for with the short wait and jump the queue after 5 s without one. A log batch carries a `batch` number, which stays the same when the batch is sent again.

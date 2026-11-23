@@ -22,16 +22,8 @@ function aConflictIsAckedRewoundOrLost(logger as Logger) as Boolean {
 }
 
 (:test)
-function streamHeaderIsAWavHeaderForSixteenKilohertzMono(logger as Logger) as Boolean {
-    var h = CallLogic.wavHeader(16000);
-    var rate = h.decodeNumber(Lang.NUMBER_FORMAT_UINT32, {:offset => 24, :endianness => Lang.ENDIAN_LITTLE});
-    var channels = h.decodeNumber(Lang.NUMBER_FORMAT_UINT16, {:offset => 22, :endianness => Lang.ENDIAN_LITTLE});
-    return h.size() == 44 && h[0] == 0x52 && h[8] == 0x57 && h[36] == 0x64 && rate == 16000 && channels == 1;
-}
-
-(:test)
-function pcmLengthIsMilliseconds(logger as Logger) as Boolean {
-    return CallLogic.pcmMs(32000, 16000) == 1000 && CallLogic.pcmMs(12800, 16000) == 400;
+function aWavFilesLengthComesFromItsSize(logger as Logger) as Boolean {
+    return CallLogic.wavMs(36278) == 1132 && CallLogic.wavMs(44 + 32000) == 1000 && CallLogic.wavMs(10) == 0;
 }
 
 (:test)

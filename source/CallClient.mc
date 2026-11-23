@@ -90,11 +90,10 @@ class Lane {
 // state; a call the server no longer knows (404) is replaced by a new one. Every failure and retry
 // goes to the server's log route.
 class CallClient {
-    const POLL_WAIT_S = 10;
-    // requests in flight at once; the link says when it is fewer (BLE_QUEUE_FULL)
-    const START_PARALLEL = 3;
-    // the wait asked of the long-poll once the link carries one request at a time
-    const POLL_WAIT_SINGLE_S = 1;
+    // The phone link carries one request at a time, so a long wait would hold up everything behind
+    // it: the events are asked for with a short wait, and the rest goes first.
+    const POLL_WAIT_S = 1;
+    const MAX_PARALLEL = 1;
     // how long a press holds back for the played reports that belong before it
     const PRESS_HOLD_MS = 1500;
     const TICK_MS = 250;
@@ -102,17 +101,17 @@ class CallClient {
     const CHUNK_MAX = 6144;
     // pending audio while the link is down: about half a minute of Opus
     const BUFFER_MAX = 65536;
-    // fetched but not yet played PCM
-    const UNPLAYED_MAX = 160000;
+    // fetched but not yet played audio: the piece playing and one more
+    const UNPLAYED_MAX = 130000;
     const PIECE_TRIES = 6;
     // failed turns in a row before recording stops and the cause is shown
     const MAX_FAILS = 5;
     // a request slower than this is logged with its round trip; of the rest, every 20th
     const SLOW_MS = 3000;
-    // the -101 limit is raised again after this long without one
-    const LIMIT_RECOVER_MS = 60000;
-    // events are sent at least this often even when other requests are waiting for the one slot
-    const EVENTS_EVERY_MS = 3000;
+    // the events go ahead of the rest when they have waited this long for the one slot
+    const EVENTS_MAX_GAP_MS = 5000;
+    // a piece is over this long after its length even if the player never says so
+    const PLAY_SLACK_MS = 800;
     const LOSS_WINDOW_MS = 20000;
     const MAX_LOSSES = 5;
     // 409s in a row on one turn before it is given up
@@ -121,7 +120,9 @@ class CallClient {
     const NOTICE_MS = 4000;
     const STOP_WAIT_MS = 1500;
     const LOG_BATCH = 20;
-    const LOG_EVERY_MS = 2500;
+    const LOG_EVERY_MS = 15000;
+    // after a failure the log goes out sooner, but not sooner than this after the last one
+    const LOG_URGENT_MS = 5000;
     const MEM_EVERY_MS = 15000;
     const HANG_GRACE_MS = 4000;
 
@@ -139,11 +140,10 @@ class CallClient {
     private var _io as CallIo;
     private var _env as CallEnv;
     private var _lanes as Array<Lane> = [
-        new Lane("open", 20000), new Lane("events", 30000), new Lane("command", 20000), new Lane("audio", 20000),
-        new Lane("piece", 40000), new Lane("played", 20000), new Lane("log", 20000), new Lane("hang", 10000)
+        new Lane("open", 20000), new Lane("events", 15000), new Lane("command", 20000), new Lane("audio", 20000),
+        new Lane("piece", 30000), new Lane("played", 15000), new Lane("log", 20000), new Lane("hang", 10000)
     ];
     private var _inflight as Number = 0;
-    private var _parallel as Number = START_PARALLEL;
     private var _closing as Boolean = false;
     private var _closedAt as Number = 0;
 
@@ -184,7 +184,11 @@ class CallClient {
     private var _pollsSent as Number = 0;
     private var _pollNo as Number = 0;
     private var _lastEventsAt as Number = 0;
-    private var _lastQueueFull as Number = 0;
+    private var _fed as Array<Array<Number>> = [];
+    private var _playEnd as Number = 0;
+    private var _reported as Dictionary<Number, Boolean> = {};
+    private var _logUrgent as Boolean = false;
+    private var _logBatch as Number = 0;
     private var _failStreak as Number = 0;
     private var _lossTimes as Array<Number> = [];
     private var _fatalNotSet as Boolean = false;
@@ -349,6 +353,16 @@ class CallClient {
 
     // The screen's player finished piece n.
     function piecePlayed(n as Number) as Void {
+        if (_reported.hasKey(n)) {
+            return;
+        }
+        _reported[n] = true;
+        for (var i = 0; i < _fed.size(); i++) {
+            if (_fed[i][0] == n) {
+                _fed = _fed.slice(0, i).addAll(_fed.slice(i + 1, null)) as Array<Array<Number>>;
+                break;
+            }
+        }
         var size = _sizes[n];
         if (size != null) {
             _unplayed -= size;
@@ -378,6 +392,22 @@ class CallClient {
     private function forgetUnplayed() as Void {
         _unplayed = 0;
         _sizes = {};
+        _fed = [];
+        _playEnd = 0;
+    }
+
+    // The player may never say that a piece is over: by the clock it is, a little after its length.
+    // Pieces then count as played and recording may begin without the player's word.
+    private function endPlaybackByTimer(now as Number) as Void {
+        while (_fed.size() > 0 && _fed[0][1] + PLAY_SLACK_MS <= now) {
+            Trace.add("play_timer", {"n" => _fed[0][0]});
+            piecePlayed(_fed[0][0]);
+        }
+        if (playbackActive && _fed.size() == 0 && !_lanes[PIECE].busy && _pieces.size() == 0 && now >= _playEnd + PLAY_SLACK_MS) {
+            playbackActive = false;
+            _autoAt = now + AUTO_RECORD_DELAY_MS;
+            changed();
+        }
     }
 
     // True while there is still audio to come for the player: pieces waiting, being fetched, or just
@@ -552,11 +582,7 @@ class CallClient {
             fatal = null;
             _fatalNotSet = false;
         }
-        if (_parallel < START_PARALLEL && now - _lastQueueFull > LIMIT_RECOVER_MS) {
-            _parallel += 1;
-            _lastQueueFull = now;
-            Trace.add("parallel_limit", {"limit" => _parallel});
-        }
+        endPlaybackByTimer(now);
         if (now - _lastMem > MEM_EVERY_MS) {
             _lastMem = now;
             Trace.add("mem", {"free" => System.getSystemStats().freeMemory, "chunks" => _chunkBytes, "unplayed" => _unplayed});
@@ -590,7 +616,7 @@ class CallClient {
 
     private function ready(lane as Number) as Boolean {
         var l = _lanes[lane];
-        return !l.busy && _env.now() >= l.notBefore && _inflight < _parallel;
+        return !l.busy && _env.now() >= l.notBefore && _inflight < MAX_PARALLEL;
     }
 
     function pump() as Void {
@@ -617,27 +643,30 @@ class CallClient {
             return;
         }
         var now = _env.now();
-        // with one request slot the events wait behind the rest, but not for long
-        var eventsFirst = _parallel > 1 || now - _lastEventsAt >= EVENTS_EVERY_MS;
-        if (eventsFirst && ready(EVENTS)) {
-            sendEvents(call);
-        }
+        // One request at a time, in this order: the press, the audio, the played reports, the pieces,
+        // the log when it is due (which is rarely), the events. The events jump the queue when they
+        // have waited too long.
+        var logDue = !_logHold && Trace.lines.size() > 0 && (Trace.lines.size() >= LOG_BATCH || now - _lastLog >= LOG_EVERY_MS
+            || (_logUrgent && now - _lastLog >= LOG_URGENT_MS));
         if (_commands.size() > 0 && ready(CMD) && (_playedQueue.size() == 0 || now >= _holdUntil)) {
             sendCommand(call);
+        }
+        if (now - _lastEventsAt >= EVENTS_MAX_GAP_MS && ready(EVENTS)) {
+            sendEvents(call);
         }
         if (_commands.size() == 0 && (_chunks.size() > 0 || _body != null || _resend.size() > 0) && ready(AUDIO)) {
             sendAudio(call);
         }
-        if (_pieces.size() > 0 && !recording && _unplayed < UNPLAYED_MAX && ready(PIECE)) {
-            sendPiece(call);
-        }
         if (_playedQueue.size() > 0 && ready(PLAYED)) {
             sendPlayed(call);
         }
-        if (!_logHold && Trace.lines.size() > 0 && ready(LOG) && (Trace.lines.size() >= LOG_BATCH || now - _lastLog >= LOG_EVERY_MS)) {
+        if (_pieces.size() > 0 && !recording && _unplayed < UNPLAYED_MAX && ready(PIECE)) {
+            sendPiece(call);
+        }
+        if (logDue && ready(LOG)) {
             sendLog(call);
         }
-        if (!eventsFirst && ready(EVENTS)) {
+        if (ready(EVENTS)) {
             sendEvents(call);
         }
     }
@@ -710,7 +739,7 @@ class CallClient {
         _pollsSent += 1;
         _pollNo = _pollsSent;
         _lastEventsAt = _env.now();
-        var params = {"after" => _cursor, "wait" => _parallel > 1 ? POLL_WAIT_S : POLL_WAIT_SINGLE_S} as Dictionary<Object, Object>;
+        var params = {"after" => _cursor, "wait" => POLL_WAIT_S} as Dictionary<Object, Object>;
         go(EVENTS, Communications.HTTP_REQUEST_METHOD_GET, "/" + call + "/events", params, jsonOptions(null));
     }
 
@@ -753,8 +782,9 @@ class CallClient {
     private function sendLog(call as String) as Void {
         var count = Trace.lines.size() < LOG_BATCH ? Trace.lines.size() : LOG_BATCH;
         _logSent = count;
+        _logUrgent = false;
         _lastLog = _env.now();
-        jsonPost(LOG, "/" + call + "/log", {"sent_t" => _env.now(), "lines" => Trace.batch(LOG_BATCH)} as Dictionary<Object, Object>);
+        jsonPost(LOG, "/" + call + "/log", {"batch" => _logBatch, "sent_t" => _env.now(), "lines" => Trace.batch(LOG_BATCH)} as Dictionary<Object, Object>);
     }
 
     private function sendHang() as Void {
@@ -778,7 +808,7 @@ class CallClient {
             _lastEventsAt = _env.now();
         }
         _requests += 1;
-        if ((lane != EVENTS && rtt > SLOW_MS) || rtt > (POLL_WAIT_S + 4) * 1000 || _requests % 20 == 0) {
+        if ((lane != EVENTS && rtt > SLOW_MS) || rtt > (POLL_WAIT_S + 6) * 1000 || _requests % 20 == 0) {
             var bytes = data instanceof ByteArray ? data.size() : (lane == AUDIO && _body != null ? (_body as ByteArray).size() : 0);
             Trace.add("rtt", {"lane" => l.name, "ms" => rtt, "bytes" => bytes, "code" => code});
         }
@@ -881,7 +911,12 @@ class CallClient {
                 _sizes[n] = data.size();
                 playbackActive = true;
                 nextPiece();
-                _io.play.invoke(n, piece["ms"] as Number, data);
+                var ms = piece["ms"] as Number;
+                var length = ms > 0 ? ms : CallLogic.wavMs(data.size());
+                var now = _env.now();
+                _playEnd = (_playEnd > now ? _playEnd : now) + length;
+                _fed.add([n, _playEnd]);
+                _io.play.invoke(n, length, data);
             } else {
                 failed(PIECE, -400);
                 return false;
@@ -892,6 +927,7 @@ class CallClient {
             }
         } else if (lane == LOG) {
             Trace.confirm(_logSent);
+            _logBatch += 1;
         } else if (lane == HANG) {
             _hangId = null;
         }
@@ -925,15 +961,11 @@ class CallClient {
     private function failed(lane as Number, code as Number) as Void {
         var l = _lanes[lane];
         l.failures += 1;
-        if (code == Communications.BLE_QUEUE_FULL && l.crowd > 1 && l.crowd - 1 < _parallel) {
-            _parallel = l.crowd - 1;
-            Trace.add("parallel_limit", {"limit" => _parallel});
-        }
-        if (code == Communications.BLE_QUEUE_FULL) {
-            _lastQueueFull = _env.now();
-        }
         l.notBefore = _env.now() + CallLogic.backoff(l.failures);
         // the first retries say what went wrong; a long outage then adds a line only now and then
+        if (lane != LOG) {
+            _logUrgent = true;
+        }
         if (lane != LOG && (l.failures <= 3 || l.failures % 10 == 0)) {
             Trace.add("retry", {"lane" => l.name, "code" => code, "n" => l.failures, "crowd" => l.crowd});
         }
@@ -1179,6 +1211,9 @@ class CallClient {
         _pieces = [];
         _unplayed = 0;
         _sizes = {};
+        _fed = [];
+        _playEnd = 0;
+        _reported = {};
         _playedQueue = [];
         _commands = [];
         _restartTurn = false;
