@@ -82,7 +82,7 @@ class Recorder {
 (:typecheck(false))
 class Speaker {
     const SLACK_MS = 800;
-    // a stop this soon after a start is the previous piece's, not this one's
+    // a stop this soon after a start (but never more than half the piece) is the previous piece's, not this one's
     const STALE_MS = 150;
 
     private var _client as CallClient;
@@ -94,6 +94,8 @@ class Speaker {
     private var _lastEnd as Number = 0;
     private var _starved as Boolean = false;
     private var _cues as Dictionary<Number, ByteArray> = {};
+    private var _currentMs as Number = 0;
+    private var _warm as Timer.Timer = new Timer.Timer();
 
     function initialize(client as CallClient, volume as Number) {
         _client = client;
@@ -104,6 +106,24 @@ class Speaker {
         } catch (ex) {
             Trace.add("volume_error", {"error" => ex.getErrorMessage()});
         }
+        // the cues are built right away, one in each turn of the clock (all three in one go run too
+        // long for the watch), so that none is late when it is needed
+        _warm.start(method(:buildNextCue), 60, true);
+    }
+
+    function buildNextCue() as Void {
+        for (var kind = CallLogic.CUE_SENT; kind <= CallLogic.CUE_ERROR; kind++) {
+            if (_cues[kind] == null) {
+                _cues[kind] = CallLogic.cueWav(kind);
+                return;
+            }
+        }
+        _warm.stop();
+    }
+
+    // A piece is playing: the player, not a clock, says when it is over.
+    function busy() as Boolean {
+        return _current >= 0;
     }
 
     function volume() as Number {
@@ -144,18 +164,18 @@ class Speaker {
     }
 
     // One of the watch's own cues, at once. The error cue also silences whatever is playing.
-    function cue(kind as Number) as Void {
+    // False when a piece is playing (a cue never talks over one, except the error cue).
+    function cue(kind as Number) as Boolean {
         if (_current >= 0 && kind != CallLogic.CUE_ERROR) {
-            return;
+            return false;
         }
         _timer.stop();
         _queue = [];
         _current = -1;
-        var wav = _cues[kind];
-        if (wav == null) {
-            wav = CallLogic.cueWav(kind);
-            _cues[kind] = wav;
+        if (_cues[kind] == null) {
+            _cues[kind] = CallLogic.cueWav(kind);
         }
+        var wav = _cues[kind] as ByteArray;
         try {
             var builder = new Output.DynamicAudioSourceBuilder({:format => {
                 :containerFormat => Audio.CONTAINER_WAV,
@@ -169,6 +189,7 @@ class Speaker {
         } catch (ex) {
             Trace.add("cue_error", {"kind" => kind, "error" => ex.getErrorMessage()});
         }
+        return true;
     }
 
     private function startNext() as Void {
@@ -196,6 +217,7 @@ class Speaker {
             return;
         }
         _current = n;
+        _currentMs = ms;
         _startedAt = System.getTimer();
         _timer.start(method(:onDeadline), ms + SLACK_MS, false);
         // the gap before a piece, and whether the piece before it was left waiting for this one
@@ -244,7 +266,7 @@ class Speaker {
         }
         if (state == Output.PLAYBACK_ERROR) {
             fail(_current);
-        } else if (state == Output.PLAYBACK_STOPPED && System.getTimer() - _startedAt >= STALE_MS) {
+        } else if (state == Output.PLAYBACK_STOPPED && System.getTimer() - _startedAt >= (_currentMs / 2 < STALE_MS ? _currentMs / 2 : STALE_MS)) {
             pieceDone("stopped");
         }
     }
