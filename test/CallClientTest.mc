@@ -431,6 +431,27 @@ function piecesAreFetchedBeforePlayedReports(logger as Logger) as Boolean {
 }
 
 (:test)
+function theOpenNamesTheFeaturesItWantsAndUsesOnlyWhatTheServerLists(logger as Logger) as Boolean {
+    var env = new FakeEnv();
+    var io = new FakeIo();
+    Trace.lines = [];
+    var c = new CallClient(io.io(), env);
+    io.client = c;
+    c.start();
+    c.chunk(Kit.silence(300));
+    c.tick();
+    var body = env.paramsOf("voice/call");
+    var named = body != null && (body["features"] as Array).indexOf("end_on_audio") >= 0;
+    // the server lists another feature only: the press goes as a command
+    env.reply("voice/call", 201, {"call" => "c1", "features" => ["played_param"]});
+    c.press();
+    c.captureEnded();
+    var plain = env.onlyOpen().find("end=") == null;
+    env.replyOnly(200, {});
+    return named && plain && env.onlyOpen().find("/command") != null;
+}
+
+(:test)
 function listeningBeginsBeforeTheCallExistsAndItsAudioFollows(logger as Logger) as Boolean {
     var env = new FakeEnv();
     var io = new FakeIo();
@@ -795,10 +816,17 @@ function theFirstPieceIsAskedForAheadOfItsAnnouncementWhereTheServerOffersIt(log
     var again = env.onlyOpen().find("/piece/0?wait=") != null;
     env.replyOnly(200, Kit.silence(4000));
     var playing = io.played.size() == 1 && io.played[0] == 0;
-    // its announcement follows and does not fetch it a second time; the next piece is fetched as announced
+    // while it plays the second piece is asked for ahead too, once
+    var second = env.onlyOpen().find("/piece/1?wait=") != null;
+    env.replyOnly(204, null);
+    // the announcements follow: piece 0 is not fetched again, piece 1 is fetched as announced
     env.reply("/events", 200, {"cursor" => 4, "events" => [{"i" => 2, "state" => "speaking"}, {"i" => 3, "piece" => 0, "ms" => 1500}, {"i" => 4, "piece" => 1, "ms" => 1500}]});
     var next = env.onlyOpen();
-    return ahead && between && again && playing && next.find("/piece/1") != null && next.find("wait=") == null;
+    var announced = next.find("/piece/1") != null && next.find("wait=") == null;
+    env.replyOnly(200, Kit.silence(4000));
+    // and the third is left to the events
+    return ahead && between && again && playing && second && announced && io.played.size() == 2
+        && env.onlyOpen().find("/events") != null;
 }
 
 (:test)
