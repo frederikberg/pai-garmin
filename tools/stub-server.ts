@@ -24,6 +24,7 @@
 // (503after handles the request, then answers 503, so the watch repeats a request the server already
 // has); GET /__stub/call-expire forgets every call, so the watch gets 404 and opens a new one;
 // GET /__stub/call-forget?n=<n> makes the server lose the last n chunks of the turn; mode=bad_audio answers audio with 422;
+// GET /__stub/call-notice?code=<code>&text=<text> sends a notice event to every call;
 // GET /__stub/call-think?ms=<ms> sets how long it thinks before speaking; GET /__stub/call-end?reason=<text> ends every call; GET /__stub/call-owner?on=1 answers the open with 403 owner_only.
 const port = Number(process.env.PORT ?? 8099)
 const key = process.env.WATCH_KEY ?? 'stub-key'
@@ -365,6 +366,11 @@ Bun.serve({
       const n = Number(url.searchParams.get('n') ?? 1)
       calls.forEach((call) => call.expected.forEach((v, turn) => call.expected.set(turn, Math.max(0, v - n))))
       return json({ forgot: n })
+    }
+    if (path === '/__stub/call-notice') {
+      const notice = { code: url.searchParams.get('code') ?? 'note', text: url.searchParams.get('text') ?? 'A notice.' }
+      calls.forEach((call) => emit(call, { notice }))
+      return json({ notice })
     }
     if (path === '/__stub/call-owner') {
       ownerOnly = url.searchParams.get('on') === '1'
