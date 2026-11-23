@@ -48,3 +48,19 @@ function traceKeepsAFixedNumberOfLines(logger as Logger) as Boolean {
     Trace.lines = [];
     return kept && batch.size() == 21 && rest;
 }
+
+(:test)
+function storedLinesComeBackAndCanBeCleared(logger as Logger) as Boolean {
+    var before = Trace.lines;
+    Trace.lines = [];
+    Trace.clearStored();
+    var none = Trace.stored() == null;
+    Trace.add("one", {"n" => 1, "ok" => true, "list" => [1, 2]});
+    Trace.persist();
+    var back = Trace.stored();
+    var kept = back != null && back.size() == 1 && ((back[0] as Dictionary)["ev"] as String).equals("one");
+    Trace.clearStored();
+    var gone = Trace.stored() == null;
+    Trace.lines = before;
+    return none && kept && gone;
+}

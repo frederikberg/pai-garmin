@@ -375,6 +375,11 @@ Bun.serve({
     const auth = req.headers.get('authorization')
     if (scenario === 'rejected' || auth !== `Bearer ${key}`) return json({ detail: 'key_rejected' }, 401)
 
+    if (path === '/api/watch/log' && req.method === 'POST') {
+      const body = (await req.json().catch(() => ({}))) as { lines?: unknown[]; stored?: boolean }
+      for (const line of body.lines ?? []) console.log(`  watch log (${body.stored ? 'stored' : 'no call'}): ${JSON.stringify(line)}`)
+      return json({})
+    }
     if (path.startsWith('/api/watch/voice/call')) return callRoute(req, url, path)
     if (path === '/api/watch/weather' && req.method === 'GET') {
       if (weather === 'key_rejected') return json({ detail: 'key_rejected' }, 401)

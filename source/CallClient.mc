@@ -24,6 +24,11 @@ class CallEnv {
         return ServerConfig.url();
     }
 
+    // The "debug log" setting.
+    function debugLog() as Boolean {
+        return ServerConfig.debugLog();
+    }
+
     // The check for a ringing alarm at launch counts as a request in flight until it is over.
     function gateOpen() as Boolean {
         return Gate.open;
@@ -141,8 +146,10 @@ class CallClient {
     const HANG_LOG_MS = 1500;
     // the open is tried this often before the call is given up
     const OPEN_TRIES = 5;
-    // the pause after a cue before the microphone opens, so the cue is not recorded
-    const CUE_GUARD_MS = 250;
+    // the open waits for the first microphone data, but not longer than this
+    const OPEN_WAIT_MS = 2500;
+    // the detailed trace's heartbeat
+    const HEARTBEAT_MS = 1000;
     // the length of a piece the server did not give one for
     const PIECE_MS_DEFAULT = 8000;
 
@@ -177,6 +184,8 @@ class CallClient {
     // why recording stopped for good until Start is pressed
     var stalled as String? = null;
     var recording as Boolean = false;
+    // the microphone has delivered data in this turn: from then on the screen says "Speak"
+    var micLive as Boolean = false;
     var recordingSince as Number = 0;
     var playbackActive as Boolean = false;
 
@@ -208,7 +217,19 @@ class CallClient {
     private var _playEnd as Number = 0;
     private var _reported as Dictionary<Number, Boolean> = {};
     private var _logUrgent as Boolean = false;
-    private var _cueDue as Boolean = false;
+    private var _openAfter as Number = 0;
+    private var _micSeen as Boolean = false;
+    private var _goPending as Boolean = false;
+    private var _turnStartedAt as Number = 0;
+    private var _micMs as Number = -1;
+    private var _openSentAt as Number = 0;
+    private var _openMs as Number = -1;
+    private var _pieceN as Number = 0;
+    private var _gapMax as Number = 0;
+    private var _starvedN as Number = 0;
+    private var _lastBeat as Number = 0;
+    private var _logToCall as Boolean = true;
+    private var _orphanHold as Boolean = false;
     private var _dropping as Boolean = false;
     private var _cuedSent as Boolean = false;
     private var _hangDoneAt as Number = 0;
@@ -252,9 +273,19 @@ class CallClient {
     function start() as Void {
         var device = System.getDeviceSettings();
         Trace.add("device", {"part" => device.partNumber, "fw" => device.firmwareVersion, "audio" => Toybox has :Audio});
+        Trace.debugOn = _env.debugLog();
+        Trace.active = true;
         _env.startClock(method(:tick), TICK_MS);
-        // listening begins before the call exists; the audio is kept until it does
+        // listening begins before the call exists; the audio is kept until it does, and the open
+        // goes out once the microphone has delivered
+        micFirst();
         startTurn();
+    }
+
+    // The next open waits for the first microphone data (at most OPEN_WAIT_MS).
+    private function micFirst() as Void {
+        _micSeen = false;
+        _openAfter = _env.now() + OPEN_WAIT_MS;
     }
 
     // The Start button: send the turn that is being recorded, cut an answer, or begin a new call
@@ -304,6 +335,7 @@ class CallClient {
         resetCall();
         _hangId = old;
         endedReason = null;
+        micFirst();
         startTurn();
     }
 
@@ -314,6 +346,8 @@ class CallClient {
         _closing = true;
         _closedAt = _env.now();
         Trace.add("hangup", null);
+        summarize();
+        Trace.persist();
         stopCapture();
         _io.stopPlayback.invoke();
         for (var i = 0; i < _lanes.size(); i++) {
@@ -352,9 +386,20 @@ class CallClient {
             }
             return;
         }
+        _micSeen = true;
+        if (_goPending && recording) {
+            // the microphone delivers: the go tone, and from here the screen says "Speak"
+            _goPending = false;
+            micLive = true;
+            recordingSince = _env.now();
+            _micMs = recordingSince - _turnStartedAt;
+            Trace.debug("capture_state", {"state" => "data", "ms" => _micMs});
+            _io.cue.invoke(CallLogic.CUE_YOUR_TURN);
+            changed();
+        }
         if (_turnBytes == 0) {
             var head = data.size() >= 4 ? data.slice(0, 4) : data;
-            Trace.add("first_chunk", {"size" => data.size(), "ogg" => data.size() >= 4 && data[0] == 0x4F && data[1] == 0x67 && data[2] == 0x67 && data[3] == 0x53, "head" => head.toString()});
+            Trace.debug("first_chunk", {"size" => data.size(), "ogg" => data.size() >= 4 && data[0] == 0x4F && data[1] == 0x67 && data[2] == 0x67 && data[3] == 0x53, "head" => head.toString()});
         }
         _chunks.add(data);
         _chunkBytes += data.size();
@@ -369,6 +414,7 @@ class CallClient {
         }
         if (_captureOpen) {
             _captureOpen = false;
+            Trace.debug("capture_state", {"state" => "stopped"});
             cueSent();
             pump();
         }
@@ -385,6 +431,7 @@ class CallClient {
 
     function captureFailed(code as Number) as Void {
         Trace.add("capture_error", {"code" => code});
+        Trace.debug("capture_state", {"state" => "error", "code" => code});
         if (recording) {
             recording = false;
             _captureOpen = false;
@@ -419,7 +466,6 @@ class CallClient {
     function playbackIdle() as Void {
         playbackActive = false;
         forgetUnplayed();
-        _cueDue = true;
         _autoAt = _env.now() + AUTO_RECORD_DELAY_MS;
         changed();
     }
@@ -450,12 +496,11 @@ class CallClient {
             return;
         }
         while (_fed.size() > 0 && _fed[0][1] + PLAY_SLACK_MS <= now) {
-            Trace.add("play_timer", {"n" => _fed[0][0]});
+            Trace.debug("play_timer", {"n" => _fed[0][0]});
             piecePlayed(_fed[0][0]);
         }
         if (playbackActive && _fed.size() == 0 && !_lanes[PIECE].busy && _pieces.size() == 0 && now >= _playEnd + PLAY_SLACK_MS) {
             playbackActive = false;
-            _cueDue = true;
             _autoAt = now + AUTO_RECORD_DELAY_MS;
             changed();
         }
@@ -481,10 +526,37 @@ class CallClient {
         return _call != null;
     }
 
+    // One line for the turn that ended: how long the open took, how long the microphone took to deliver,
+    // the bytes sent and what the answer's pieces did.
+    private function summarize() as Void {
+        if (_turn == 0) {
+            return;
+        }
+        Trace.add("turn_summary", {"turn" => _turn, "open_ms" => _turn == 1 ? _openMs : -1, "mic_ms" => _micMs,
+            "bytes" => _turnBytes, "pieces" => _pieceN, "gap_max_ms" => _gapMax, "starved" => _starvedN});
+        _pieceN = 0;
+        _gapMax = 0;
+        _starvedN = 0;
+    }
+
+    // The player started a piece: the silence before it, and whether the piece before had to wait for it.
+    function noteGap(gapMs as Number, starved as Boolean) as Void {
+        _pieceN += 1;
+        _gapMax = gapMs > _gapMax ? gapMs : _gapMax;
+        if (starved) {
+            _starvedN += 1;
+        }
+    }
+
     // ----- the turn
 
     private function startTurn() as Void {
+        summarize();
         _turn += 1;
+        _micMs = -1;
+        micLive = false;
+        _goPending = true;
+        _turnStartedAt = _env.now();
         _seq = 0;
         _turnBytes = 0;
         _chunks = [];
@@ -502,21 +574,23 @@ class CallClient {
         heard = "";
         _bufferFullLogged = false;
         _dropping = false;
-        _cueDue = false;
         var started = _io.startCapture.invoke();
         if (started == 0) {
             recording = true;
             _captureOpen = true;
             recordingSince = _env.now();
             Trace.add("turn_start", {"turn" => _turn});
+            Trace.debug("capture_state", {"state" => "started"});
         } else if (started == 1) {
             recording = false;
             _captureOpen = false;
+            _goPending = false;
             stopForGood("This watch cannot capture Opus", true);
             Trace.add("capture_unavailable", null);
         } else {
             recording = false;
             _captureOpen = false;
+            _goPending = false;
             recordFailed("Microphone busy");
         }
         changed();
@@ -568,6 +642,7 @@ class CallClient {
         queuePress();
         _turnSent = true;
         _turnSentPoll = -1;
+        Trace.persist();
         changed();
     }
 
@@ -637,9 +712,14 @@ class CallClient {
             startTurn();
         }
         endPlaybackByTimer(now);
+        if (Trace.debugOn && now - _lastBeat >= HEARTBEAT_MS) {
+            // a gap in these lines is a stall of the watch's own loop
+            _lastBeat = now;
+            Trace.add("hb", {"rec" => recording, "mic" => micLive});
+        }
         if (now - _lastMem > MEM_EVERY_MS) {
             _lastMem = now;
-            Trace.add("mem", {"free" => System.getSystemStats().freeMemory, "chunks" => _chunkBytes, "unplayed" => _unplayed});
+            Trace.debug("mem", {"free" => System.getSystemStats().freeMemory, "chunks" => _chunkBytes, "unplayed" => _unplayed});
         }
         autoRecord(now);
         pump();
@@ -663,6 +743,7 @@ class CallClient {
             || (_hangDoneAt > 0 && now - _hangDoneAt >= HANG_LOG_MS);
         if ((heard && logDone) || now - _closedAt > HANG_GRACE_MS) {
             _closedSaid = true;
+            Trace.active = false;
             _env.stopClock();
             Trace.add("hangup_done", {"heard" => heard});
             _io.closed.invoke();
@@ -673,15 +754,6 @@ class CallClient {
         if (_call != null && !recording && !_endPending && !_turnSent && engine.equals("listening")
                 && !playbackActive && !moreToPlay() && now >= _autoAt && fatal == null && stalled == null
                 && !_io.busy.invoke()) {
-            if (_cueDue) {
-                // "your turn": the microphone opens once the cue has played, so it is not recorded; a cue
-                // that could not play is asked for again
-                if (_io.cue.invoke(CallLogic.CUE_YOUR_TURN)) {
-                    _cueDue = false;
-                    _autoAt = _env.now() + CallLogic.cueMs(CallLogic.CUE_YOUR_TURN) + CUE_GUARD_MS;
-                }
-                return;
-            }
             startTurn();
         }
     }
@@ -719,18 +791,26 @@ class CallClient {
         if (_hangId != null && ready(HANG)) {
             sendHang();
         }
+        var now = _env.now();
+        // the log goes out when the link has nothing else to carry
+        var idle = !recording && !_endPending && _commands.size() == 0 && _chunks.size() == 0 && _body == null
+            && _resend.size() == 0 && _playedQueue.size() == 0 && _pieces.size() == 0;
+        var logDue = !_logHold && Trace.lines.size() > 0 && ((idle && (Trace.lines.size() >= batchSize() || now - _lastLog >= LOG_EVERY_MS
+            || (_logUrgent && now - _lastLog >= LOG_URGENT_MS))) || Trace.lines.size() >= Trace.MAX_LINES - 10);
         if (call == null) {
-            if (fatal == null && stalled == null && endedReason == null && _env.gateOpen() && ready(OPEN)) {
+            // the open waits for the first microphone data, so that the watch's own loop is not stuck in a
+            // request while the microphone starts
+            if (fatal == null && stalled == null && endedReason == null && _env.gateOpen() && ready(OPEN)
+                    && (_micSeen || now >= _openAfter || !recording)) {
                 sendOpen();
+            } else if (!_orphanHold && logDue && idle && !_lanes[OPEN].busy && ready(LOG)) {
+                sendLog(null);
             }
             return;
         }
-        var now = _env.now();
-        // One request at a time, in this order: the press, the audio, the played reports, the pieces,
+        // One request at a time, in this order: the press, the audio, the pieces, the played reports,
         // the log when it is due (which is rarely), the events. The events jump the queue when they
         // have waited too long.
-        var logDue = !_logHold && Trace.lines.size() > 0 && (Trace.lines.size() >= LOG_BATCH || now - _lastLog >= LOG_EVERY_MS
-            || (_logUrgent && now - _lastLog >= LOG_URGENT_MS));
         if (_commands.size() > 0 && ready(CMD) && (_playedQueue.size() == 0 || now >= _holdUntil)) {
             sendCommand(call);
         }
@@ -740,11 +820,11 @@ class CallClient {
         if (_commands.size() == 0 && (_chunks.size() > 0 || _body != null || _resend.size() > 0) && ready(AUDIO)) {
             sendAudio(call);
         }
-        if (_playedQueue.size() > 0 && ready(PLAYED)) {
-            sendPlayed(call);
-        }
         if (_pieces.size() > 0 && !recording && _unplayed < UNPLAYED_MAX && ready(PIECE)) {
             sendPiece(call);
+        }
+        if (_playedQueue.size() > 0 && ready(PLAYED)) {
+            sendPlayed(call);
         }
         if (logDue && ready(LOG)) {
             sendLog(call);
@@ -755,7 +835,8 @@ class CallClient {
     }
 
     private function url(path as String) as String {
-        return _env.baseUrl() + Api.VOICE_CALL + path;
+        // the log outside a call has its own route
+        return _env.baseUrl() + (path.find("/api/") == 0 ? "" : Api.VOICE_CALL) + path;
     }
 
     // Starts the request of a lane, or fails it when it cannot go out (no setup, no phone).
@@ -775,6 +856,7 @@ class CallClient {
         l.busy = true;
         l.sentAt = _env.now();
         l.token += 1;
+        Trace.debug("req_start", {"lane" => l.name});
         _inflight += 1;
         l.crowd = _inflight;
         options[:method] = verb;
@@ -813,6 +895,7 @@ class CallClient {
     }
 
     private function sendOpen() as Void {
+        _openSentAt = _env.now();
         Trace.add("open", null);
         jsonPost(OPEN, "", {} as Dictionary<Object, Object>);
     }
@@ -861,12 +944,19 @@ class CallClient {
         jsonPost(PLAYED, "/" + call + "/played", {"n" => _playedQueue[0]} as Dictionary<Object, Object>);
     }
 
-    private function sendLog(call as String) as Void {
-        var count = Trace.lines.size() < LOG_BATCH ? Trace.lines.size() : LOG_BATCH;
+    // The detailed trace makes more lines, so a batch holds more.
+    private function batchSize() as Number {
+        return Trace.debugOn ? LOG_BATCH * 2 : LOG_BATCH;
+    }
+
+    // The log, to the call's route, or to the one outside a call when there is no call.
+    private function sendLog(call as String?) as Void {
+        var count = Trace.lines.size() < batchSize() ? Trace.lines.size() : batchSize();
         _logSent = count;
         _logUrgent = false;
+        _logToCall = call != null;
         _lastLog = _env.now();
-        jsonPost(LOG, "/" + call + "/log", {"batch" => _logBatch, "sent_t" => _env.now(), "lines" => Trace.batch(LOG_BATCH)} as Dictionary<Object, Object>);
+        jsonPost(LOG, call != null ? "/" + call + "/log" : Api.LOG, {"batch" => _logBatch, "sent_t" => _env.now(), "lines" => Trace.batch(count)} as Dictionary<Object, Object>);
     }
 
     private function sendHang() as Void {
@@ -890,8 +980,11 @@ class CallClient {
             _lastEventsAt = _env.now();
         }
         _requests += 1;
-        if ((lane != EVENTS && rtt > SLOW_MS) || rtt > (POLL_WAIT_S + 6) * 1000 || _requests % 20 == 0) {
-            var bytes = data instanceof ByteArray ? data.size() : (lane == AUDIO && _body != null ? (_body as ByteArray).size() : 0);
+        var bytes = data instanceof ByteArray ? data.size() : (lane == AUDIO && _body != null ? (_body as ByteArray).size() : 0);
+        if (Trace.debugOn) {
+            // every request: start (in go) and end
+            Trace.add("req_end", {"lane" => l.name, "ms" => rtt, "code" => code, "bytes" => bytes});
+        } else if ((lane != EVENTS && rtt > SLOW_MS) || rtt > (POLL_WAIT_S + 6) * 1000) {
             Trace.add("rtt", {"lane" => l.name, "ms" => rtt, "bytes" => bytes, "code" => code});
         }
         if (code >= 200 && code < 300 || code == -400 && (lane == HANG || lane == PLAYED || lane == CMD || lane == LOG)) {
@@ -942,7 +1035,11 @@ class CallClient {
             // an ended call answers its other routes with 404 while the events still say so
             Trace.add("route_gone", {"lane" => _lanes[lane].name});
             if (lane == LOG) {
-                _logHold = true;
+                if (_logToCall) {
+                    _logHold = true;
+                } else {
+                    _orphanHold = true;
+                }
             } else if (lane == AUDIO) {
                 abandonTurn("Call ended", null);
             } else {
@@ -972,7 +1069,8 @@ class CallClient {
             }
             if (id instanceof String) {
                 _call = id;
-                Trace.add("opened", {"call" => id});
+                _openMs = _env.now() - _openSentAt;
+                Trace.add("opened", {"call" => id, "ms" => _openMs});
             } else {
                 failed(OPEN, 0);
                 return false;
@@ -1002,7 +1100,7 @@ class CallClient {
                 var ms = piece["ms"] as Number;
                 var length = ms > 0 ? ms : PIECE_MS_DEFAULT;
                 var started = _lanes[PIECE].sentAt;
-                Trace.add("piece_fetch", {"n" => n, "bytes" => data.size(), "t0" => started, "ms" => _env.now() - started});
+                Trace.debug("piece_fetch", {"n" => n, "bytes" => data.size(), "t0" => started, "ms" => _env.now() - started});
                 var now = _env.now();
                 _playEnd = (_playEnd > now ? _playEnd : now) + length;
                 _fed.add([n, _playEnd]);
@@ -1183,6 +1281,7 @@ class CallClient {
         discardTurn();
         setNotice(text);
         _turnSent = false;
+        Trace.persist();
         if (cause != null) {
             recordFailed(cause);
         }
@@ -1253,7 +1352,7 @@ class CallClient {
         var piece = e["piece"] as Object?;
         if (state instanceof String) {
             engine = state;
-            Trace.add("state", {"state" => state});
+            Trace.debug("state", {"state" => state});
             if (state.equals("generating") || state.equals("speaking")) {
                 _turnSent = false;
             } else if (_turnSent && _commands.size() == 0 && _turnSentPoll >= 0 && _pollNo > _turnSentPoll) {
@@ -1265,7 +1364,7 @@ class CallClient {
             if (piece > _lastPiece) {
                 _lastPiece = piece;
                 _pieces.add({"n" => piece, "ms" => ms instanceof Number ? ms : 0} as Dictionary<String, Number>);
-                Trace.add("piece", {"n" => piece, "ms" => ms, "ref" => e["ref"]});
+                Trace.debug("piece", {"n" => piece, "ms" => ms, "ref" => e["ref"]});
             }
         } else if (e["clear"] != null) {
             Trace.add("clear", {"dropped" => e["dropped"]});
@@ -1280,7 +1379,6 @@ class CallClient {
             if ("heard_nothing".equals(code)) {
                 // the press had nothing to answer: listening goes on
                 _turnSent = false;
-                _cueDue = true;
             } else if ("turn_timed_out".equals(code)) {
                 restartTurn();
             }

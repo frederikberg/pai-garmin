@@ -29,6 +29,10 @@ class FakeEnv extends CallEnv {
         return true;
     }
 
+    function debugLog() as Boolean {
+        return false;
+    }
+
     function startClock(tick as Method() as Void, ms as Number) as Void {
     }
 
@@ -226,6 +230,9 @@ function opened(env as FakeEnv, io as FakeIo) as CallClient {
     io.client = c;
     c.start();
     c.tick();
+    // the microphone delivers, which lets the open go out
+    c.chunk(silence(10));
+    c.tick();
     env.reply("voice/call", 201, {"call" => "c1"});
     return c;
 }
@@ -301,7 +308,62 @@ function aFailedMicrophoneStartIsTriedAgainWithStart(logger as Logger) as Boolea
 }
 
 (:test)
-function yourTurnSoundsAndRecordingRestartsAfterTheLastPiece(logger as Logger) as Boolean {
+function theGoToneSoundsWhenTheMicrophoneDeliversInEveryTurn(logger as Logger) as Boolean {
+    var env = new FakeEnv();
+    var io = new FakeIo();
+    var c = Kit.opened(env, io);
+    // turn 1: the microphone delivered, the tone sounded then and not before
+    var first = io.cues.size() == 1 && io.cues[0] == CallLogic.CUE_YOUR_TURN && c.micLive;
+    c.chunk(Kit.silence(300));
+    var once = io.cues.size() == 1;
+    c.press();
+    c.captureEnded();
+    env.settle();
+    // a one-piece answer; the player never says it stopped
+    env.reply("/events", 200, {"cursor" => 3, "events" => [{"i" => 1, "state" => "generating"}, {"i" => 2, "piece" => 0, "ms" => 1500}, {"i" => 3, "state" => "listening"}]});
+    env.reply("/piece/0", 200, Kit.silence(5000));
+    var sentOnly = io.cues.size() == 2 && io.cues[1] == CallLogic.CUE_SENT;
+    env.clock = 2500;
+    c.tick();
+    env.clock = 3000;
+    c.tick();
+    env.clock = 3600;
+    c.tick();
+    // turn 2: the microphone is on, but no tone and no "Speak" until it delivers
+    var waiting = io.captures == 2 && c.recording && !c.micLive && io.cues.size() == 2;
+    c.chunk(Kit.silence(100));
+    var second = io.cues.size() == 3 && io.cues[2] == CallLogic.CUE_YOUR_TURN && c.micLive;
+    return first && once && sentOnly && waiting && second;
+}
+
+(:test)
+function theOpenWaitsForTheFirstMicrophoneDataButNotForever(logger as Logger) as Boolean {
+    var env = new FakeEnv();
+    var io = new FakeIo();
+    Trace.lines = [];
+    var c = new CallClient(io.io(), env);
+    io.client = c;
+    c.start();
+    c.tick();
+    env.clock = 2000;
+    c.tick();
+    var held = !env.asked("voice/call");
+    env.clock = 2600;
+    c.tick();
+    var late = env.asked("voice/call");
+    // and with data the open goes at once
+    var env2 = new FakeEnv();
+    var io2 = new FakeIo();
+    var c2 = new CallClient(io2.io(), env2);
+    io2.client = c2;
+    c2.start();
+    c2.chunk(Kit.silence(50));
+    c2.tick();
+    return held && late && env2.asked("voice/call");
+}
+
+(:test)
+function piecesAreFetchedBeforePlayedReports(logger as Logger) as Boolean {
     var env = new FakeEnv();
     var io = new FakeIo();
     var c = Kit.opened(env, io);
@@ -309,24 +371,13 @@ function yourTurnSoundsAndRecordingRestartsAfterTheLastPiece(logger as Logger) a
     c.press();
     c.captureEnded();
     env.settle();
-    // a one-piece answer; the player never says it stopped
-    env.reply("/events", 200, {"cursor" => 3, "events" => [{"i" => 1, "state" => "generating"}, {"i" => 2, "piece" => 0, "ms" => 1500}, {"i" => 3, "state" => "listening"}]});
-    env.reply("/piece/0", 200, Kit.silence(5000));
-    var played = io.played.size() == 1;
-    var sentOnly = io.cues.size() == 1 && io.cues[0] == CallLogic.CUE_SENT;
-    env.clock = 2000;
-    c.tick();
-    var quiet = io.cues.size() == 1;
-    // the piece is over by the clock; then the cue, then the pause before the microphone
-    env.clock = 2500;
-    c.tick();
-    env.clock = 3000;
-    c.tick();
-    var cued = io.cues.size() == 2 && io.cues[1] == CallLogic.CUE_YOUR_TURN;
-    var notYet = io.captures == 1;
-    env.clock = 3600;
-    c.tick();
-    return played && sentOnly && quiet && cued && notYet && io.captures == 2 && c.recording;
+    env.reply("/events", 200, {"cursor" => 4, "events" => [{"i" => 1, "state" => "generating"}, {"i" => 2, "piece" => 0, "ms" => 500}, {"i" => 3, "piece" => 1, "ms" => 500}]});
+    // a played report is waiting when piece 0 arrives and piece 1 is wanted
+    c.piecePlayed(99);
+    env.reply("/piece/0", 200, Kit.silence(3000));
+    // the next request is the piece, not the report
+    var next = env.onlyOpen();
+    return next.find("/piece/1") != null;
 }
 
 (:test)
@@ -356,6 +407,7 @@ function aHangUpIsHeardByTheServerBeforeTheScreenLeaves(logger as Logger) as Boo
     var env = new FakeEnv();
     var io = new FakeIo();
     var c = Kit.opened(env, io);
+    env.settle();
     env.clock = 1000;
     c.hangUp();
     // the events request that was in flight is forgotten; the hang-up is the only one now
@@ -376,6 +428,7 @@ function requestsGoOneAtATimeInPriorityOrder(logger as Logger) as Boolean {
     var env = new FakeEnv();
     var io = new FakeIo();
     var c = Kit.opened(env, io);
+    env.settle();
     // a turn that is sent, with the log full and events due, while one request is in flight
     c.chunk(Kit.silence(300));
     c.press();
@@ -420,15 +473,13 @@ function aPlayerThatIsStillPlayingKeepsTheClockFromEndingTheAnswer(logger as Log
         env.clock = t;
         c.tick();
     }
-    var held = io.captures == 1 && io.cues.size() == 1 && !c.recording;
+    var held = io.captures == 1 && !c.recording;
     io.busyNow = false;
     env.clock = 6500;
     c.tick();
     env.clock = 7000;
     c.tick();
-    env.clock = 7700;
-    c.tick();
-    return held && io.cues.size() == 2 && io.captures == 2;
+    return held && io.captures == 2;
 }
 
 (:test)
@@ -465,4 +516,24 @@ function afterABufferOverflowTheRestOfTheTurnIsDropped(logger as Logger) as Bool
     env.reply("voice/call", 201, {"call" => "c1"});
     env.settle();
     return env.audioBytes == 60000;
+}
+
+(:test)
+function theLogWaitsForTheLinkToBeIdle(logger as Logger) as Boolean {
+    var env = new FakeEnv();
+    var io = new FakeIo();
+    var c = Kit.opened(env, io);
+    env.settle();
+    for (var i = 0; i < 25; i++) {
+        Trace.add("x", null);
+    }
+    // the microphone is recording: audio and events have the link, the log waits
+    env.replyOnly(200, {"cursor" => 0, "events" => []});
+    env.replyOnly(200, {"cursor" => 0, "events" => []});
+    var waited = !env.asked("/log");
+    c.chunk(Kit.silence(200));
+    c.press();
+    c.captureEnded();
+    env.settle();
+    return waited && env.asked("/log");
 }
