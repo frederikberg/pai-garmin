@@ -150,8 +150,14 @@ class CallClient {
     // after the press the rest of the audio waits this long for the capture to hand over its last data,
     // so that one request carries all of it
     const TAIL_WAIT_MS = 400;
-    // how long a request for the answer's first piece waits on the server for it
+    // an answer's first pieces are asked for before the events announce them: this many of them, the
+    // first with the longer wait on the server (it is still being made), the others with the shorter
+    // one and only once (the piece before plays meanwhile)
+    const AHEAD_PIECES = 2;
     const PIECE_WAIT_S = 2;
+    const NEXT_WAIT_S = 1;
+    // the optional features this app asks the server for
+    const FEATURES = ["end_on_audio", "played_param", "piece_wait", "no_speech", "short_first_piece"];
     // the buzz for a sent turn comes this long after the press even if the capture has not said it stopped
     const SENT_CUE_MS = 300;
     // a gap between clock ticks longer than this is traced
@@ -257,6 +263,8 @@ class CallClient {
     // the answer's first piece is asked for before the events announce it; after a wait that brought
     // none, the events are asked once before the next
     private var _expectPiece as Boolean = false;
+    // how many pieces of this answer may still be asked for ahead
+    private var _ahead as Number = 0;
     private var _eventsFirst as Boolean = false;
     // the piece being fetched: its number, its length in ms, and whether it was asked for unannounced
     private var _fetchN as Number = -1;
@@ -1057,7 +1065,7 @@ class CallClient {
     private function sendOpen() as Void {
         _openSentAt = _env.now();
         Trace.add("open", null);
-        jsonPost(OPEN, "", {} as Dictionary<Object, Object>);
+        jsonPost(OPEN, "", {"features" => FEATURES} as Dictionary<Object, Object>);
     }
 
     private function sendEvents(call as String) as Void {
@@ -1116,7 +1124,7 @@ class CallClient {
         _fetchN = n;
         _fetchLen = ms;
         _fetchSpec = spec;
-        var query = spec ? "?wait=" + PIECE_WAIT_S : "";
+        var query = spec ? "?wait=" + (_ahead == AHEAD_PIECES ? PIECE_WAIT_S : NEXT_WAIT_S) : "";
         _riding = -1;
         if (offers("played_param") && _playedQueue.size() > 0) {
             _riding = _playedQueue[0];
@@ -1188,8 +1196,10 @@ class CallClient {
         }
         var empty = !(data instanceof ByteArray) || data.size() == 0;
         if (lane == PIECE && _fetchSpec && !_closing && ((ok && empty) || code == -400)) {
-            // the piece asked for ahead has not come yet: the events are asked, then it is asked for again
+            // the piece asked for ahead has not come yet: the events are asked, then the first piece of
+            // an answer is asked for again; a later one is left to the events
             _eventsFirst = true;
+            _expectPiece = _ahead == AHEAD_PIECES;
             l.failures = 0;
             l.notBefore = 0;
         } else if (lane == PIECE && _fetchSpec && !_closing && code == 404) {
@@ -1332,7 +1342,8 @@ class CallClient {
                 if (_fetchSpec) {
                     // its announcement, with its length, is still to come: until the player says the piece
                     // is over it counts as long as its bytes would last at 16 kbit/s, more than it is
-                    _expectPiece = false;
+                    _ahead -= 1;
+                    _expectPiece = _ahead > 0;
                     _lastPiece = n > _lastPiece ? n : _lastPiece;
                     ms = data.size() / 2;
                     if (_pieceMs < 0 && _sentMs >= 0) {
@@ -1614,6 +1625,7 @@ class CallClient {
             Trace.debug("state", {"state" => state});
             if (state.equals("generating")) {
                 _expectPiece = offers("piece_wait") && !inSession() && _pieces.size() == 0;
+                _ahead = AHEAD_PIECES;
             } else if (!state.equals("speaking")) {
                 _expectPiece = false;
             }

@@ -132,7 +132,7 @@ type Call = {
   session: string | null
   backs: Set<number>
 }
-const FEATURES = ['end_on_audio', 'played_param', 'piece_wait', 'no_speech', 'session_mode']
+const FEATURES = ['end_on_audio', 'played_param', 'piece_wait', 'no_speech', 'short_first_piece', 'session_mode']
 let featuresOn = (process.env.FEATURES ?? 'all') !== 'none'
 const calls = new Map<string, Call>()
 let ownerOnly = false
@@ -149,7 +149,7 @@ function emit(call: Call, event: Record<string, unknown>) {
 }
 function setState(call: Call, state: string) {
   call.state = state
-  emit(call, call.features ? { state, owner: call.owner, session: call.session } : { state })
+  emit(call, { state, owner: call.owner, session: call.session })
 }
 // A press: in a session's call it sends the turn; with Computer it ends the turn or cuts the answer.
 function applyPress(call: Call, press: number, turn: number) {
@@ -201,7 +201,7 @@ function openCall(): Call {
   const call: Call = {
     id: crypto.randomUUID(), events: [], waiters: [], expected: new Map(), bytes: 0, chunks: 0, presses: new Set(), pressApplied: 0, ended: false,
     state: 'ready', pieces: new Map(), nextPiece: 0, played: new Set(), generation: 0, timers: [],
-    features: featuresOn, owner: 'computer', session: null, backs: new Set(),
+    features: false, owner: 'computer', session: null, backs: new Set(),
   }
   calls.set(call.id, call)
   setState(call, 'ready')
@@ -236,8 +236,11 @@ async function callRoute(req: Request, url: URL, path: string): Promise<Response
 async function callRoute2(req: Request, url: URL, sub: string): Promise<Response> {
   if (sub === '' && req.method === 'POST') {
     if (ownerOnly) return json({ detail: 'owner_only' }, 403)
+    // a server with the features turns them on for a watch that names any, and lists what it offers
+    const asked = ((await req.json().catch(() => ({}))) as { features?: unknown }).features
     const call = openCall()
-    return json(call.features ? { call: call.id, features: FEATURES } : { call: call.id }, 201)
+    call.features = featuresOn && Array.isArray(asked) && asked.length > 0
+    return json(featuresOn ? { call: call.id, features: FEATURES } : { call: call.id }, 201)
   }
   const m = sub.match(/^\/([^/]+)(\/.*)?$/)
   if (!m) return json({ detail: 'not found' }, 404)
@@ -273,7 +276,7 @@ async function callRoute2(req: Request, url: URL, sub: string): Promise<Response
   }
   if (rest === '/command' && req.method === 'POST') {
     const body = (await req.json().catch(() => ({}))) as { action?: string; press?: number; turn?: number; back?: number }
-    if (call.features && body.action === 'back' && Number.isInteger(body.back)) {
+    if (body.action === 'back' && Number.isInteger(body.back)) {
       console.log(`  back ${body.back} with ${call.owner}`)
       if (!call.backs.has(body.back!) && call.owner === 'session') toComputer(call)
       call.backs.add(body.back!)

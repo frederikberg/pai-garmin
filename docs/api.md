@@ -64,7 +64,7 @@ The Computer screen holds one call at a time over plain requests. All routes are
 
 | Request | Answer |
 |---|---|
-| `POST /api/watch/voice/call` | `201 {"call": "<id>", "features": [...]}` opens a call (`features` names the optional features the server offers, see below; without it the watch uses the plain routes); `403 {"detail": "owner_only"}` for a key that is not the owner's |
+| `POST /api/watch/voice/call` `{"features": [...]}` | `201 {"call": "<id>", "features": [...]}` opens a call (the body names the optional features the watch wants, the answer the ones the server offers, see below; without the answer's list the watch uses the plain routes); `403 {"detail": "owner_only"}` for a key that is not the owner's |
 | `POST …/call/{id}/audio?turn=<t>&seq=<n>&after_press=<k>`, `Content-Type: audio/ogg`, body = the next bytes of the turn's Ogg Opus stream | `200 {"next_seq": n+1}`; a repeated `seq` is ignored (`200`); a gap answers `409 {"next_seq": <expected>}`; `422 bad_audio` when the turn cannot be decoded any more |
 | `POST …/call/{id}/command` `{"action": "press", "press": <n>, "turn": <t>}` | `200 {}`; a repeated press number is ignored |
 | `POST …/call/{id}/command` `{"action": "back", "back": <n>}` | `200 {}`, in a session's call: give the call back to Computer; `back` counts up per call from 1 and a repeated number is ignored |
@@ -97,13 +97,14 @@ The phone link carries one request at a time, so the watch sends one request at 
 
 ## Optional features
 
-The open's answer lists what the server offers beyond the plain routes; the watch uses each only when it is listed, so either side works with an older other side.
+The watch names the features it wants in the open's body (`end_on_audio`, `played_param`, `piece_wait`, `no_speech`, `short_first_piece`), and the answer lists what the server offers beyond the plain routes. The watch uses a feature only when it named it and the answer lists it, so either side works with an older other side.
 
 - `end_on_audio`: the press that ends a turn rides on the turn's last audio request as `&end=<press>`, and the server applies it after that chunk, also when the chunk is a repeat. The watch then sends no command for that press. It keeps the number: after a failure the same press goes again on the audio request, or as a command when no audio is left to send. After the press the watch waits up to 400 ms for the microphone's last data, so that one request carries it.
 - `played_param`: `played=<n>` on `GET …/events` or `GET …/piece/{n}` reports piece `n` as played, one report a request, in place of `POST …/played`. A press that cuts an answer waits for the reports of the pieces that played, as it does for the posts.
-- `piece_wait`: `GET …/piece/{n}?wait=<s>` waits up to `s` seconds for piece `n` and answers without a body (`204`) when it has not come. Once the state is `generating`, the watch asks this way for the answer's first piece (the number after the last one it knows) with a wait of 2 s, and after an empty answer asks the events once with `wait=0` before it asks again. The piece's own event still arrives and is skipped. Until then the watch takes the piece to be as long as its bytes last at 16 kbit/s. A `404` ends the asking ahead, and the events name the next piece.
+- `piece_wait`: `GET …/piece/{n}?wait=<s>` waits up to `s` seconds for piece `n` and answers without a body (`204`) when it has not come. Once the state is `generating`, the watch asks this way for the answer's first piece (the number after the last one it knows) with a wait of 2 s, and after an empty answer asks the events once with `wait=0` before it asks again. When that piece has arrived and plays, it asks for the next one the same way, once, with a wait of 1 s, so the second piece downloads while the first plays; the pieces after it are fetched as the events announce them, also while one plays. The event of a piece fetched ahead still arrives and is skipped. Until then the watch takes the piece to be as long as its bytes last at 16 kbit/s. A `404` ends the asking ahead, and the events name the next piece.
 - `no_speech`: a notice with the code `no_speech`, sent when a turn after an answer has had no speech for a while. With Computer the watch then ends the call by itself: two short buzzes and a longer one, the hang-up, and the screen leaves. It ignores the notice before the first answer and in a session's call.
-- `session_mode`: the server may hand the call to a session's call and says so on the state events.
+- `short_first_piece`: the first pieces of an answer are short (under a second, then a few seconds), so the first sound comes early. Nothing changes on the wire.
+- `session_mode` is listed by a server that can hand the call to a session; the watch does not ask for it, and follows the state events' `owner` whether it is listed or not.
 
 ## A session's call
 
