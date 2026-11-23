@@ -6,4 +6,6 @@
     <string id="WatchKeyPrompt">A watch key created in PAI Cloud under Settings, Watch keys</string>
     <string id="DebugLogTitle">Debug log</string>
     <string id="DebugLogPrompt">Send a detailed trace of Computer calls to the server's log (heartbeat, every request)</string>
+    <string id="MicFilterTitle">Mic filter</string>
+    <string id="MicFilterPrompt">Noise and echo reduction on the microphone, where the watch has it</string>
 </strings>

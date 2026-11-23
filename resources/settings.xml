@@ -8,4 +8,7 @@
     <setting propertyKey="@Properties.debugLog" title="@Strings.DebugLogTitle" prompt="@Strings.DebugLogPrompt">
         <settingConfig type="boolean" />
     </setting>
+    <setting propertyKey="@Properties.micFilter" title="@Strings.MicFilterTitle" prompt="@Strings.MicFilterPrompt">
+        <settingConfig type="boolean" />
+    </setting>
 </settings>

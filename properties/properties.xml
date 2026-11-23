@@ -2,4 +2,5 @@
     <property id="serverUrl" type="string"></property>
     <property id="watchKey" type="string"></property>
     <property id="debugLog" type="boolean">true</property>
+    <property id="micFilter" type="boolean">false</property>
 </properties>

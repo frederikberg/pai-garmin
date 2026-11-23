@@ -21,6 +21,12 @@ module ServerConfig {
         return value instanceof Boolean && value;
     }
 
+    // The "mic filter" setting: noise and echo reduction on the microphone. Off when unset.
+    function micFilter() as Boolean {
+        var value = Application.Properties.getValue("micFilter");
+        return value instanceof Boolean && value;
+    }
+
     function isSet() as Boolean {
         return isComplete(url(), key());
     }

@@ -537,3 +537,40 @@ function theLogWaitsForTheLinkToBeIdle(logger as Logger) as Boolean {
     env.settle();
     return waited && env.asked("/log");
 }
+
+(:test)
+function theNextTurnStartsAsSoonAsTheLastPieceEnds(logger as Logger) as Boolean {
+    var env = new FakeEnv();
+    var io = new FakeIo();
+    var c = Kit.opened(env, io);
+    c.chunk(Kit.silence(300));
+    c.press();
+    c.captureEnded();
+    env.settle();
+    env.clock = 5000;
+    env.reply("/events", 200, {"cursor" => 3, "events" => [{"i" => 1, "state" => "generating"}, {"i" => 2, "piece" => 0, "ms" => 1500}, {"i" => 3, "state" => "listening"}]});
+    env.reply("/piece/0", 200, Kit.silence(5000));
+    var waiting = io.captures == 1 && !c.recording;
+    // the player finishes the last piece, and nothing else happens: no tick, no event
+    c.piecePlayed(0);
+    c.playbackIdle();
+    c.answerEnded();
+    return waiting && io.captures == 2 && c.recording;
+}
+
+(:test)
+function aStallOfTheClockIsTraced(logger as Logger) as Boolean {
+    var env = new FakeEnv();
+    var io = new FakeIo();
+    var c = Kit.opened(env, io);
+    Trace.lines = [];
+    env.clock = 1000;
+    c.tick();
+    env.clock = 1250;
+    c.tick();
+    var quiet = Trace.lines.size() == 0;
+    env.clock = 5000;
+    c.tick();
+    var last = Trace.lines.size() > 0 ? Trace.lines[Trace.lines.size() - 1] : null;
+    return quiet && last != null && (last["ev"] as String).equals("stall") && (last["gap_ms"] as Number) == 3750;
+}

@@ -28,15 +28,20 @@ class ComputerView extends WatchUi.View {
 
     function initialize() {
         View.initialize();
+        var t0 = System.getTimer();
         var saved = Storage.getValue(VOLUME_KEY);
         if (saved instanceof Number && saved >= 0 && saved <= 100) {
             _volume = saved;
         }
         _client = build();
         _recorder = new Recorder(_client);
+        var t1 = System.getTimer();
         _client.start();
-        // after the start, so that listening begins without waiting for the cues to be built
+        var t2 = System.getTimer();
         _speaker = new Speaker(_client, _volume);
+        var t3 = System.getTimer();
+        // how long each piece of the screen's start took: a stall of the watch shows here
+        Trace.add("startup", {"setup_ms" => t1 - t0, "client_start_ms" => t2 - t1, "speaker_ms" => t3 - t2});
     }
 
     private function build() as CallClient {
@@ -118,12 +123,21 @@ class ComputerView extends WatchUi.View {
         }
     }
 
-    // A cue; the one for a sent turn comes with a buzz, after the microphone has stopped.
+    // A signal. The turn signals are buzzes only: no sound plays while the microphone runs. The error
+    // adds the system's error tone, since the microphone is off then.
     function cue(kind as Number) as Boolean {
-        if (kind == CallLogic.CUE_SENT && Attention has :vibrate) {
-            Attention.vibrate([new Attention.VibeProfile(70, 80)]);
+        if (Attention has :vibrate) {
+            var pattern = CallLogic.buzz(kind);
+            var profile = [] as Array<Attention.VibeProfile>;
+            for (var i = 0; i < pattern.size(); i++) {
+                profile.add(new Attention.VibeProfile(pattern[i][0], pattern[i][1]));
+            }
+            Attention.vibrate(profile);
         }
-        return _speaker.cue(kind);
+        if (kind == CallLogic.CUE_ERROR && Attention has :playTone) {
+            Attention.playTone(Attention.TONE_ERROR);
+        }
+        return true;
     }
 
     function busy() as Boolean {

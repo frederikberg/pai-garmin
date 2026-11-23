@@ -22,17 +22,6 @@ function aConflictIsAckedRewoundOrLost(logger as Logger) as Boolean {
 }
 
 (:test)
-function cuesAreDistinctCompleteWavFiles(logger as Logger) as Boolean {
-    var sent = CallLogic.cueWav(CallLogic.CUE_SENT);
-    var turn = CallLogic.cueWav(CallLogic.CUE_YOUR_TURN);
-    var error = CallLogic.cueWav(CallLogic.CUE_ERROR);
-    // 44 bytes of header, then 16-bit samples at 8 kHz
-    return sent.size() == 44 + 8 * 90 * 2 && turn.size() == 44 + 8 * 190 * 2 && error.size() == 44 + 8 * 420 * 2
-        && CallLogic.cueMs(CallLogic.CUE_YOUR_TURN) == 190 && sent[0] == 0x52 && sent[8] == 0x57 && sent[36] == 0x64
-        && CallLogic.cueNotes(CallLogic.CUE_SENT)[0][0] != CallLogic.cueNotes(CallLogic.CUE_YOUR_TURN)[0][0];
-}
-
-(:test)
 function traceKeepsAFixedNumberOfLines(logger as Logger) as Boolean {
     Trace.lines = [];
     Trace.dropped = 0;
@@ -63,4 +52,14 @@ function storedLinesComeBackAndCanBeCleared(logger as Logger) as Boolean {
     var gone = Trace.stored() == null;
     Trace.lines = before;
     return none && kept && gone;
+}
+
+(:test)
+function theTurnSignalsAreBuzzesThatDiffer(logger as Logger) as Boolean {
+    var speak = CallLogic.buzz(CallLogic.CUE_YOUR_TURN);
+    var sent = CallLogic.buzz(CallLogic.CUE_SENT);
+    var error = CallLogic.buzz(CallLogic.CUE_ERROR);
+    // one short buzz to speak, two short ones (with a pause) when sent, one long one for an error
+    return speak.size() == 1 && sent.size() == 3 && sent[1][0] == 0 && sent[0][1] < 200 && error.size() == 1
+        && error[0][1] > 4 * speak[0][1];
 }
