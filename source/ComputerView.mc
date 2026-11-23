@@ -176,8 +176,12 @@ class ComputerView extends WatchUi.View {
             color = Graphics.COLOR_ORANGE;
             body = _client.stalled as String;
             hint = "Start: try again";
+        } else if (_client.recording && !_client.micLive) {
+            // the microphone has not delivered yet: nothing is being recorded, so no ring and no counter
+            headline = "Getting ready";
+            color = Graphics.COLOR_LT_GRAY;
         } else if (_client.recording) {
-            headline = "Listening " + elapsed();
+            headline = "Speak " + elapsed();
             color = Graphics.COLOR_RED;
             hint = "Start: send";
             ring(dc, w, h);

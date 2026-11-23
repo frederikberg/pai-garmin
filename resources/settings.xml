@@ -5,4 +5,7 @@
     <setting propertyKey="@Properties.watchKey" title="@Strings.WatchKeyTitle" prompt="@Strings.WatchKeyPrompt">
         <settingConfig type="alphaNumeric" />
     </setting>
+    <setting propertyKey="@Properties.debugLog" title="@Strings.DebugLogTitle" prompt="@Strings.DebugLogPrompt">
+        <settingConfig type="boolean" />
+    </setting>
 </settings>

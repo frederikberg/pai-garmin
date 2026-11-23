@@ -47,7 +47,7 @@ class Recorder {
             Capture.start();
             if (!_logged) {
                 _logged = true;
-                Trace.add("capture_start", {"window" => settings[:windowSize], "filters" => filters});
+                Trace.debug("capture_start", {"window" => settings[:windowSize], "filters" => filters});
             }
         } catch (ex) {
             Trace.add("capture_init", {"error" => ex.getErrorMessage()});
@@ -185,7 +185,7 @@ class Speaker {
             }});
             builder.append(wav);
             Output.play(builder.complete(), 0);
-            Trace.add("cue", {"kind" => kind, "vol" => _volume});
+            Trace.debug("cue", {"kind" => kind, "vol" => _volume});
         } catch (ex) {
             Trace.add("cue_error", {"kind" => kind, "error" => ex.getErrorMessage()});
         }
@@ -221,7 +221,8 @@ class Speaker {
         _startedAt = System.getTimer();
         _timer.start(method(:onDeadline), ms + SLACK_MS, false);
         // the gap before a piece, and whether the piece before it was left waiting for this one
-        Trace.add("piece_start", {"n" => n, "bytes" => data.size(), "ms" => ms,
+        _client.noteGap(_lastEnd > 0 ? _startedAt - _lastEnd : 0, _starved);
+        Trace.debug("piece_start", {"n" => n, "bytes" => data.size(), "ms" => ms,
             "gap_ms" => _lastEnd > 0 ? _startedAt - _lastEnd : 0, "starved" => _starved, "vol" => _volume});
         _lastEnd = 0;
         _starved = false;
@@ -243,7 +244,7 @@ class Speaker {
         _current = -1;
         var now = System.getTimer();
         if (n >= 0) {
-            Trace.add("piece_end", {"n" => n, "how" => how, "played_ms" => now - _startedAt});
+            Trace.debug("piece_end", {"n" => n, "how" => how, "played_ms" => now - _startedAt});
             _client.piecePlayed(n);
         }
         _lastEnd = now;
@@ -260,7 +261,7 @@ class Speaker {
     }
 
     function onState(state as Output.PlaybackState) as Void {
-        Trace.add("play_state", {"state" => state, "n" => _current});
+        Trace.debug("play_state", {"state" => state, "n" => _current});
         if (_current < 0) {
             return;
         }

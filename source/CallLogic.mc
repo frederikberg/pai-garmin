@@ -1,3 +1,4 @@
+import Toybox.Application.Storage;
 import Toybox.Lang;
 import Toybox.Math;
 import Toybox.System;
@@ -107,13 +108,22 @@ module CallLogic {
 
 // What the watch saw during a call, kept for the server's log route in bounded batches. When the
 // buffer overflows, the first lines (the cause of an outage) stay and the oldest of the later ones go.
+// The last lines are also kept in the app's storage at the end of a turn and at exit, to be sent at
+// the next launch if the run did not get to send them.
 module Trace {
-    const MAX_LINES = 80;
+    const MAX_LINES = 120;
     const KEEP_FIRST = 20;
+    // lines kept in storage (a few kB)
+    const STORE_LINES = 25;
+    const STORE_KEY = "log";
     var lines as Array<Dictionary<String, Object>> = [];
     var dropped as Number = 0;
     // the drop count a batch in flight reported
     var reported as Number = 0;
+    // the detailed trace (heartbeat, every request) is on
+    var debugOn as Boolean = false;
+    // a Computer call is running
+    var active as Boolean = false;
 
     function add(ev as String, fields as Dictionary?) as Void {
         var line = {"t" => System.getTimer(), "ev" => ev} as Dictionary<String, Object>;
@@ -134,6 +144,13 @@ module Trace {
         }
     }
 
+    // A line of the detailed trace: only while the debug setting is on.
+    function debug(ev as String, fields as Dictionary?) as Void {
+        if (debugOn) {
+            add(ev, fields);
+        }
+    }
+
     // Up to count lines for one request; they leave the buffer only through confirm().
     function batch(count as Number) as Array<Dictionary<String, Object>> {
         var n = lines.size() < count ? lines.size() : count;
@@ -150,5 +167,21 @@ module Trace {
         lines = lines.slice(n, null) as Array<Dictionary<String, Object>>;
         dropped -= reported;
         reported = 0;
+    }
+
+    // The last lines go to storage.
+    function persist() as Void {
+        var keep = lines.size() > STORE_LINES ? lines.slice(lines.size() - STORE_LINES, null) : lines;
+        Storage.setValue(STORE_KEY, keep as Array<Storage.ValueType>);
+    }
+
+    // What the previous run stored, or null.
+    function stored() as Array? {
+        var value = Storage.getValue(STORE_KEY);
+        return value instanceof Array && value.size() > 0 ? value : null;
+    }
+
+    function clearStored() as Void {
+        Storage.deleteValue(STORE_KEY);
     }
 }

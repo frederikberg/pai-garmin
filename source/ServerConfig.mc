@@ -15,6 +15,12 @@ module ServerConfig {
         return trim(setting(KEY_PROPERTY));
     }
 
+    // The "debug log" setting: a detailed trace of Computer calls. Off when unset.
+    function debugLog() as Boolean {
+        var value = Application.Properties.getValue("debugLog");
+        return value instanceof Boolean && value;
+    }
+
     function isSet() as Boolean {
         return isComplete(url(), key());
     }
