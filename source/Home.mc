@@ -11,6 +11,9 @@ module Home {
         }
         menu.addItem(new WatchUi.MenuItem("Weather", null, :weather, null));
         menu.addItem(new WatchUi.MenuItem("Alarm", null, :alarm, null));
+        if (Toybox has :Audio) {
+            menu.addItem(new WatchUi.MenuItem("Audio test", null, :audiotest, null));
+        }
         return [menu, new HomeDelegate()];
     }
 }
@@ -24,6 +27,8 @@ class HomeDelegate extends WatchUi.Menu2InputDelegate {
         if (item.getId() == :computer) {
             var computer = new ComputerView();
             WatchUi.pushView(computer, new ComputerDelegate(computer), WatchUi.SLIDE_LEFT);
+        } else if (item.getId() == :audiotest) {
+            WatchUi.pushView(new AudioTestListView(), new AudioTestListDelegate(), WatchUi.SLIDE_LEFT);
         } else if (item.getId() == :weather) {
             var view = new WeatherView();
             WatchUi.pushView(view, new WeatherDelegate(view), WatchUi.SLIDE_LEFT);

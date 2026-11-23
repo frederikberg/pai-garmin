@@ -16,6 +16,8 @@
 // through Garmin's image service, which cannot reach a local server.
 // Switch it on GET /__stub/weather?name=<weather scenario>.
 //
+// GET /api/watch/voice/test lists two tone clips (one part, three parts) for the watch's audio test.
+//
 // The Computer call (/api/watch/voice/call...) is simulated: opening it queues the state and one ready
 // piece; the audio of a turn must arrive with consecutive seq numbers (a gap answers 409); the press
 // that ends a turn makes the stub "think", then answer with three pieces and sentences; a press during
@@ -397,6 +399,19 @@ Bun.serve({
     const auth = req.headers.get('authorization')
     if (scenario === 'rejected' || auth !== `Bearer ${key}`) return json({ detail: 'key_rejected' }, 401)
 
+    if (path === '/api/watch/voice/test' && req.method === 'GET') {
+      return json({
+        variants: [
+          { id: 'wav16', label: 'WAV 16 kHz', fmt: 'wav', rate: 16000, parts: 1 },
+          { id: 'wav16_x3', label: 'WAV 16 kHz, 3 parts', fmt: 'wav', rate: 16000, parts: 3 },
+        ],
+      })
+    }
+    const testPart = path.match(/^\/api\/watch\/voice\/test\/([^/]+)\/(\d+)$/)
+    if (testPart && req.method === 'GET') {
+      const seconds = testPart[1].endsWith('_x3') ? 1.5 : 4
+      return new Response(toneWav(330 + 110 * Number(testPart[2]), seconds), { headers: { 'content-type': 'application/octet-stream' } })
+    }
     if (path.startsWith('/api/watch/voice/call')) return callRoute(req, url, path)
     if (path === '/api/watch/weather' && req.method === 'GET') {
       if (weather === 'key_rejected') return json({ detail: 'key_rejected' }, 401)

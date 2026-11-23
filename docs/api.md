@@ -90,3 +90,7 @@ Events carry their own index `i`, which the watch uses to skip what it saw. Each
 Each piece plays through its own audio source, one after the other. A piece is over when the player says it stopped or, if it never does, a little after the length the event gave (`ms`, else the WAV's own); the next one starts then and the watch reports it as played. Recording begins after the last piece in the same way, without waiting for the player.
 
 The phone link carries one request at a time, so the watch sends one request at a time, in this order: a press, audio, played reports, pieces, the log when it is due (every 15 s or 20 lines, sooner after a failure, and at hang-up), the events. The events are asked for with the short wait and jump the queue after 5 s without one. A log batch carries a `batch` number, which stays the same when the batch is sent again.
+
+## Audio test
+
+`GET /api/watch/voice/test` answers `{"variants": [{"id": "…", "label": "…", "fmt": "ogg"|"wav", "rate": 16000|24000, "parts": <n>}]}`, the test clips of the watch's audio test screen. `GET /api/watch/voice/test/{id}/{part}` answers `application/octet-stream`, one complete file: Ogg Opus mono at the variant's rate for `ogg`, 16 kHz mono WAV for `wav`. The screen downloads the parts of the chosen variant one request at a time, plays each through its own audio source (the next part downloads while one plays) and shows the bytes, the download time of each part, the gap between parts and the volume.
