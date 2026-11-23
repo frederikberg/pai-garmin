@@ -18,6 +18,7 @@ cat > "$target" <<XML
     <property id="serverUrl" type="string">$PAI_URL</property>
     <property id="watchKey" type="string">$PAI_WATCH_KEY</property>
     <property id="debugLog" type="boolean">true</property>
+    <property id="micFilter" type="boolean">false</property>
 </properties>
 XML
 echo "wrote $target"

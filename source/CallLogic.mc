@@ -1,6 +1,5 @@
 import Toybox.Application.Storage;
 import Toybox.Lang;
-import Toybox.Math;
 import Toybox.System;
 
 // The decisions of the Computer call that need no network or audio hardware.
@@ -31,78 +30,19 @@ module CallLogic {
         return expected >= base ? "rewind" : "lost";
     }
 
-    // The watch's own cues: short, played at once and never from the network.
+    // The watch's own signals, never from the network.
     const CUE_SENT = 0;
     const CUE_YOUR_TURN = 1;
     const CUE_ERROR = 2;
-    const CUE_RATE = 8000;
-    const CUE_TABLE = 64;
-
-    // A cue's notes as [frequency in Hz, length in ms]: "sent" is one short high beep, "your turn"
-    // two rising notes, "error" two low falling ones.
-    function cueNotes(kind as Number) as Array<Array<Number>> {
-        if (kind == CUE_SENT) {
-            return [[880, 90]];
-        } else if (kind == CUE_YOUR_TURN) {
-            return [[660, 80], [990, 110]];
+    // How the watch buzzes for a signal, as [strength 0-100, length in ms] with strength 0 a pause.
+    // "Speak" (the microphone delivers) is one short buzz, "sent" two short ones, an error one long.
+    function buzz(kind as Number) as Array<Array<Number>> {
+        if (kind == CUE_YOUR_TURN) {
+            return [[100, 120]];
+        } else if (kind == CUE_SENT) {
+            return [[100, 70], [0, 90], [100, 70]];
         }
-        return [[330, 160], [220, 260]];
-    }
-
-    function cueMs(kind as Number) as Number {
-        var notes = cueNotes(kind);
-        var ms = 0;
-        for (var i = 0; i < notes.size(); i++) {
-            ms += notes[i][1];
-        }
-        return ms;
-    }
-
-    // A cue as a complete 8 kHz mono 16-bit WAV file. The samples come from a table by whole-number
-    // steps: a sine per sample takes too long for the watch to run in one go.
-    function cueWav(kind as Number) as ByteArray {
-        var notes = cueNotes(kind);
-        var table = [] as Array<Number>;
-        for (var i = 0; i < CUE_TABLE; i++) {
-            table.add((Math.sin(2 * Math.PI * i / CUE_TABLE) * 1000).toNumber());
-        }
-        var pcm = [] as Array<Number>;
-        for (var n = 0; n < notes.size(); n++) {
-            var count = CUE_RATE * notes[n][1] / 1000;
-            var fade = CUE_RATE / 200;
-            var step = notes[n][0] * CUE_TABLE * 256 / CUE_RATE;
-            var phase = 0;
-            for (var i = 0; i < count; i++) {
-                var edge = i < fade ? i : (count - 1 - i < fade ? count - 1 - i : fade);
-                var v = table[(phase >> 8) % CUE_TABLE] * 26 * edge / fade;
-                phase += step;
-                pcm.add(v & 0xFF);
-                pcm.add((v >> 8) & 0xFF);
-            }
-        }
-        var wav = new [0]b;
-        wav.addAll("RIFF".toUtf8Array() as Array);
-        wav.addAll(le(36 + pcm.size(), 4));
-        wav.addAll("WAVEfmt ".toUtf8Array() as Array);
-        wav.addAll(le(16, 4));
-        wav.addAll(le(1, 2));
-        wav.addAll(le(1, 2));
-        wav.addAll(le(CUE_RATE, 4));
-        wav.addAll(le(CUE_RATE * 2, 4));
-        wav.addAll(le(2, 2));
-        wav.addAll(le(16, 2));
-        wav.addAll("data".toUtf8Array() as Array);
-        wav.addAll(le(pcm.size(), 4));
-        wav.addAll(pcm as Array);
-        return wav;
-    }
-
-    function le(value as Number, bytes as Number) as Array {
-        var out = [];
-        for (var i = 0; i < bytes; i++) {
-            out.add((value >> (8 * i)) & 0xFF);
-        }
-        return out;
+        return [[100, 700]];
     }
 }
 
@@ -171,8 +111,10 @@ module Trace {
 
     // The last lines go to storage.
     function persist() as Void {
+        var t0 = System.getTimer();
         var keep = lines.size() > STORE_LINES ? lines.slice(lines.size() - STORE_LINES, null) : lines;
         Storage.setValue(STORE_KEY, keep as Array<Storage.ValueType>);
+        debug("persist", {"ms" => System.getTimer() - t0, "lines" => keep.size()});
     }
 
     // What the previous run stored, or null.

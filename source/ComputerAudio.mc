@@ -27,16 +27,17 @@ class Recorder {
             :frequency => Audio.FREQ_16_KHZ,
             :channels => Audio.CHANNEL_MONO
         };
+        var t0 = System.getTimer();
         if (!Capture.isFormatSupported(format)) {
             Trace.add("capture_format", {"opus" => false});
             return 1;
         }
-        // noise reduction and echo cancellation, where the watch has them: the speaker's tail goes
-        // into the microphone when recording restarts after an answer
+        // noise reduction and echo cancellation, when the setting asks for them and the watch has them
         var filters = [];
-        if (Capture.getSupportedFilters().indexOf(Capture.FILTER_NREC) >= 0) {
+        if (ServerConfig.micFilter() && Capture.getSupportedFilters().indexOf(Capture.FILTER_NREC) >= 0) {
             filters = [Capture.FILTER_NREC];
         }
+        var t1 = System.getTimer();
         try {
             var settings = Capture.initializeAudioCapture(self, {
                 :format => format,
@@ -44,10 +45,12 @@ class Recorder {
                 :windowFilledBehavior => Capture.WINDOW_FILLED_CONTINUE,
                 :filters => filters
             });
+            var t2 = System.getTimer();
             Capture.start();
             if (!_logged) {
                 _logged = true;
-                Trace.debug("capture_start", {"window" => settings[:windowSize], "filters" => filters});
+                var t3 = System.getTimer();
+                Trace.add("capture_start", {"check_ms" => t1 - t0, "init_ms" => t2 - t1, "start_ms" => t3 - t2, "window" => settings[:windowSize], "filters" => filters, "setting" => ServerConfig.micFilter()});
             }
         } catch (ex) {
             Trace.add("capture_init", {"error" => ex.getErrorMessage()});
@@ -93,9 +96,7 @@ class Speaker {
     private var _timer as Timer.Timer = new Timer.Timer();
     private var _lastEnd as Number = 0;
     private var _starved as Boolean = false;
-    private var _cues as Dictionary<Number, ByteArray> = {};
     private var _currentMs as Number = 0;
-    private var _warm as Timer.Timer = new Timer.Timer();
 
     function initialize(client as CallClient, volume as Number) {
         _client = client;
@@ -106,19 +107,6 @@ class Speaker {
         } catch (ex) {
             Trace.add("volume_error", {"error" => ex.getErrorMessage()});
         }
-        // the cues are built right away, one in each turn of the clock (all three in one go run too
-        // long for the watch), so that none is late when it is needed
-        _warm.start(method(:buildNextCue), 60, true);
-    }
-
-    function buildNextCue() as Void {
-        for (var kind = CallLogic.CUE_SENT; kind <= CallLogic.CUE_ERROR; kind++) {
-            if (_cues[kind] == null) {
-                _cues[kind] = CallLogic.cueWav(kind);
-                return;
-            }
-        }
-        _warm.stop();
     }
 
     // A piece is playing: the player, not a clock, says when it is over.
@@ -161,35 +149,6 @@ class Speaker {
             }
         }
         _client.playbackIdle();
-    }
-
-    // One of the watch's own cues, at once. The error cue also silences whatever is playing.
-    // False when a piece is playing (a cue never talks over one, except the error cue).
-    function cue(kind as Number) as Boolean {
-        if (_current >= 0 && kind != CallLogic.CUE_ERROR) {
-            return false;
-        }
-        _timer.stop();
-        _queue = [];
-        _current = -1;
-        if (_cues[kind] == null) {
-            _cues[kind] = CallLogic.cueWav(kind);
-        }
-        var wav = _cues[kind] as ByteArray;
-        try {
-            var builder = new Output.DynamicAudioSourceBuilder({:format => {
-                :containerFormat => Audio.CONTAINER_WAV,
-                :codec => Audio.CODEC_LPCM,
-                :frequency => Audio.FREQ_8_KHZ,
-                :channels => Audio.CHANNEL_MONO
-            }});
-            builder.append(wav);
-            Output.play(builder.complete(), 0);
-            Trace.debug("cue", {"kind" => kind, "vol" => _volume});
-        } catch (ex) {
-            Trace.add("cue_error", {"kind" => kind, "error" => ex.getErrorMessage()});
-        }
-        return true;
     }
 
     private function startNext() as Void {
@@ -236,6 +195,7 @@ class Speaker {
             Trace.add("stop_error", {"error" => ex.getErrorMessage()});
         }
         _client.playbackIdle();
+        _client.answerEnded();
     }
 
     private function pieceDone(how as String) as Void {

@@ -132,7 +132,6 @@ class CallClient {
     const MAX_LOSSES = 5;
     // 409s in a row on one turn before it is given up
     const MAX_CONFLICTS = 4;
-    const AUTO_RECORD_DELAY_MS = 400;
     const NOTICE_MS = 4000;
     const STOP_WAIT_MS = 1500;
     const LOG_BATCH = 20;
@@ -150,6 +149,8 @@ class CallClient {
     const OPEN_WAIT_MS = 2500;
     // the detailed trace's heartbeat
     const HEARTBEAT_MS = 1000;
+    // a gap between clock ticks longer than this is traced
+    const STALL_MS = 1500;
     // the length of a piece the server did not give one for
     const PIECE_MS_DEFAULT = 8000;
 
@@ -228,6 +229,7 @@ class CallClient {
     private var _gapMax as Number = 0;
     private var _starvedN as Number = 0;
     private var _lastBeat as Number = 0;
+    private var _lastTick as Number = 0;
     private var _logToCall as Boolean = true;
     private var _orphanHold as Boolean = false;
     private var _dropping as Boolean = false;
@@ -466,8 +468,13 @@ class CallClient {
     function playbackIdle() as Void {
         playbackActive = false;
         forgetUnplayed();
-        _autoAt = _env.now() + AUTO_RECORD_DELAY_MS;
         changed();
+    }
+
+    // The player has played the last piece: the next turn starts now. Nothing is waited for, since the
+    // microphone takes a moment of its own to deliver.
+    function answerEnded() as Void {
+        autoRecord(_env.now());
     }
 
     function playbackFailed(code as Number) as Void {
@@ -501,7 +508,6 @@ class CallClient {
         }
         if (playbackActive && _fed.size() == 0 && !_lanes[PIECE].busy && _pieces.size() == 0 && now >= _playEnd + PLAY_SLACK_MS) {
             playbackActive = false;
-            _autoAt = now + AUTO_RECORD_DELAY_MS;
             changed();
         }
     }
@@ -680,6 +686,11 @@ class CallClient {
 
     function tick() as Void {
         var now = _env.now();
+        // the clock ticks every TICK_MS: a much longer gap is a stall of the watch's own loop
+        if (_lastTick > 0 && now - _lastTick > STALL_MS) {
+            Trace.add("stall", {"gap_ms" => now - _lastTick});
+        }
+        _lastTick = now;
         for (var i = 0; i < _lanes.size(); i++) {
             var lane = _lanes[i];
             if (lane.busy && now - lane.sentAt > lane.watchdogMs) {
@@ -751,7 +762,7 @@ class CallClient {
     }
 
     private function autoRecord(now as Number) as Void {
-        if (_call != null && !recording && !_endPending && !_turnSent && engine.equals("listening")
+        if (!_closing && _call != null && !recording && !_endPending && !_turnSent && engine.equals("listening")
                 && !playbackActive && !moreToPlay() && now >= _autoAt && fatal == null && stalled == null
                 && !_io.busy.invoke()) {
             startTurn();
@@ -995,6 +1006,7 @@ class CallClient {
         } else {
             rejected(lane, code, data);
         }
+        autoRecord(_env.now());
         pump();
         changed();
     }
@@ -1265,8 +1277,7 @@ class CallClient {
         _restartTurn = false;
         _captureOpen = false;
         discardTurn();
-        // the next turn starts by itself a moment after the old capture has fully stopped
-        _autoAt = _env.now() + AUTO_RECORD_DELAY_MS;
+        // the next turn starts by itself as soon as the old capture has fully stopped
     }
 
     // The turn cannot be completed: it is dropped without a press and the next one starts by itself.
@@ -1291,14 +1302,14 @@ class CallClient {
     // stays on screen. A fatal reason ends Computer; a stalled one waits for Start.
     private function stopForGood(reason as String, retryable as Boolean) as Void {
         Trace.add("stopped", {"reason" => reason});
-        stopCapture();
-        discardTurn();
-        _io.stopPlayback.invoke();
         if (retryable) {
             stalled = reason;
         } else {
             fatal = reason;
         }
+        stopCapture();
+        discardTurn();
+        _io.stopPlayback.invoke();
         _io.cue.invoke(CallLogic.CUE_ERROR);
         changed();
     }
@@ -1391,7 +1402,6 @@ class CallClient {
         } else if (e["heard"] instanceof String) {
             heard = e["heard"] as String;
         }
-        _autoAt = _autoAt > _env.now() ? _autoAt : _env.now() + AUTO_RECORD_DELAY_MS;
     }
 
     // ----- a call ends or is lost
