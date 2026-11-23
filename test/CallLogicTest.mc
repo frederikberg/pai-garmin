@@ -39,22 +39,6 @@ function traceKeepsAFixedNumberOfLines(logger as Logger) as Boolean {
 }
 
 (:test)
-function storedLinesComeBackAndCanBeCleared(logger as Logger) as Boolean {
-    var before = Trace.lines;
-    Trace.lines = [];
-    Trace.clearStored();
-    var none = Trace.stored() == null;
-    Trace.add("one", {"n" => 1, "ok" => true, "list" => [1, 2]});
-    Trace.persist();
-    var back = Trace.stored();
-    var kept = back != null && back.size() == 1 && ((back[0] as Dictionary)["ev"] as String).equals("one");
-    Trace.clearStored();
-    var gone = Trace.stored() == null;
-    Trace.lines = before;
-    return none && kept && gone;
-}
-
-(:test)
 function theTurnSignalsAreBuzzesThatDiffer(logger as Logger) as Boolean {
     var speak = CallLogic.buzz(CallLogic.CUE_YOUR_TURN);
     var sent = CallLogic.buzz(CallLogic.CUE_SENT);
@@ -62,4 +46,27 @@ function theTurnSignalsAreBuzzesThatDiffer(logger as Logger) as Boolean {
     // one short buzz to speak, two short ones (with a pause) when sent, one long one for an error
     return speak.size() == 1 && sent.size() == 3 && sent[1][0] == 0 && sent[0][1] < 200 && error.size() == 1
         && error[0][1] > 4 * speak[0][1];
+}
+
+(:test)
+function whatARunKeptLeadsTheNextRunsLogOnce(logger as Logger) as Boolean {
+    Trace.lines = [];
+    Trace.add("old", null);
+    Trace.keep();
+    // the next run: a line of its own exists before the kept ones are read
+    Trace.lines = [];
+    Trace.add("new", null);
+    Trace.restore();
+    var order = Trace.lines.size() == 3 && (Trace.lines[0]["ev"] as String).equals("old")
+        && (Trace.lines[1]["ev"] as String).equals("stored_end") && (Trace.lines[2]["ev"] as String).equals("new");
+    Trace.restore();
+    var once = Trace.lines.size() == 3;
+    // a run that sent everything leaves nothing behind, also where an earlier run had
+    Trace.add("unsent", null);
+    Trace.keep();
+    Trace.lines = [];
+    Trace.keep();
+    Trace.restore();
+    var nothing = Trace.lines.size() == 0;
+    return order && once && nothing;
 }

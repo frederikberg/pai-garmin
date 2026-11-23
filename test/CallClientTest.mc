@@ -1,6 +1,11 @@
 import Toybox.Lang;
 import Toybox.Test;
 
+// Present in a unit test build only: the app sees it and opens the menu, never a call.
+(:test)
+module UnderTest {
+}
+
 // The device the client talks to, replaced by a recorder: requests wait until the test answers them,
 // and time moves when the test says so.
 (:test)
@@ -666,4 +671,44 @@ function aMicrophoneThatFlushesInsideItsStopSendsTheRestInOneRequest(logger as L
     var whole = env.inFlight() == 1 && body != null && body.size() == 430;
     env.replyOnly(200, {});
     return whole && env.onlyOpen().find("/command") != null;
+}
+
+(:test)
+function theScreenChangesWithTheCallAndNotWithEveryAnswer(logger as Logger) as Boolean {
+    var env = new FakeEnv();
+    var io = new FakeIo();
+    Trace.lines = [];
+    var c = new CallClient(io.io(), env);
+    io.client = c;
+    c.start();
+    // the microphone is on but has not delivered: he must not speak yet
+    var wait = CallScreen.face(c).headline;
+    c.chunk(Kit.silence(300));
+    c.tick();
+    env.reply("voice/call", 201, {"call" => "c1"});
+    var speak = CallScreen.face(c);
+    c.press();
+    c.captureEnded();
+    var sending = CallScreen.face(c).headline;
+    env.settleUntilEvents();
+    env.reply("/events", 200, {"cursor" => 2, "events" => [{"i" => 1, "heard" => "add milk"}, {"i" => 2, "state" => "generating"}]});
+    var thinking = CallScreen.face(c);
+    // polls that bring nothing leave the picture as it is
+    env.reply("/events", 200, {"cursor" => 2, "events" => []});
+    env.reply("/events", 200, {"cursor" => 2, "events" => []});
+    var same = CallScreen.face(c).key().equals(thinking.key());
+    env.reply("/events", 200, {"cursor" => 3, "events" => [{"i" => 3, "state" => "speaking"}]});
+    var speaking = CallScreen.face(c);
+    // two grey states differ by their word alone
+    var a = new Face();
+    a.headline = "Wait";
+    var b = new Face();
+    b.headline = "Connecting";
+    if (a.key().equals(b.key())) {
+        return false;
+    }
+    return wait.equals("Wait") && speak.headline.equals("Speak") && sending.equals("Sending")
+        && thinking.headline.equals("Thinking") && thinking.body.equals("add milk") && same
+        && speaking.headline.equals("Speaking") && !speaking.key().equals(thinking.key())
+        && !speak.key().equals(thinking.key());
 }

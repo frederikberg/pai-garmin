@@ -255,18 +255,8 @@ class WeatherView extends WatchUi.View {
         }
     }
 
-    // Text centred on y (percent of the height) in the first font whose width fits the round
-    // screen at that height, or the last one when none does.
     private function fitted(dc as Graphics.Dc, y as Number, text as String, fonts as Array<Graphics.FontType>) as Void {
-        var cy = dc.getHeight() * y / 100;
-        var font = fonts[fonts.size() - 1];
-        for (var i = 0; i < fonts.size(); i++) {
-            if (dc.getTextWidthInPixels(text, fonts[i]) <= Draw.widthAt(dc, cy, dc.getFontHeight(fonts[i]))) {
-                font = fonts[i];
-                break;
-            }
-        }
-        dc.drawText(dc.getWidth() / 2, cy, font, text, Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER);
+        Draw.fitted(dc, y, text, fonts);
     }
 
     private function intensityColor(intensity as String) as Graphics.ColorType {

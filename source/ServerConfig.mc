@@ -27,6 +27,18 @@ module ServerConfig {
         return value instanceof Boolean && value;
     }
 
+    // The "open with" setting: 0 Computer unless opened from the glance list, 1 always Computer,
+    // 2 always the menu. 0 when unset.
+    function openWith() as Number {
+        var value = Application.Properties.getValue("openWith");
+        return value instanceof Number ? value : 0;
+    }
+
+    // Whether a launch goes straight to Computer.
+    function opensComputer(openWith as Number, fromGlance as Boolean, hasAudio as Boolean) as Boolean {
+        return hasAudio && (openWith == 1 || (openWith == 0 && !fromGlance));
+    }
+
     function isSet() as Boolean {
         return isComplete(url(), key());
     }

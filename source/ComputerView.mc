@@ -6,9 +6,9 @@ import Toybox.System;
 import Toybox.WatchUi;
 
 // The Computer screen: opening it starts a call. The watch records each turn by itself, Start sends
-// it, or cuts the answer and records again; Up and Down are the volume, Back hangs up. What the
-// call is doing, the recording time, the link's health and the transcript lines the server sends are
-// on screen.
+// it, or cuts the answer and records again; Up and Down are the volume, Back hangs up. The screen
+// shows what the call is doing as one word in a ring of the state's colour (CallScreen), and is
+// drawn again only when that picture changes.
 // Toybox.Audio exists on some products only; the menu offers this screen where it does (Home), and
 // the checker skips the class so the other products build.
 (:typecheck(false))
@@ -17,6 +17,8 @@ class ComputerView extends WatchUi.View {
     const VOLUME_STEP = 10;
     // where the volume is kept between openings
     const VOLUME_KEY = "volume";
+    // the width of the ring that carries the state's colour
+    const RING = 10;
 
     private var _client as CallClient;
     private var _speaker as Speaker;
@@ -25,9 +27,15 @@ class ComputerView extends WatchUi.View {
     private var _volume as Number = START_VOLUME;
     // the screen has been left some way other than the end of the hang-up
     private var _left as Boolean = false;
+    // the app opened straight into this screen: leaving it ends the app
+    private var _root as Boolean;
+    private var _toMenu as Boolean = false;
+    // the key of the face on screen
+    private var _shown as String = "";
 
-    function initialize() {
+    function initialize(root as Boolean) {
         View.initialize();
+        _root = root;
         var t0 = System.getTimer();
         var saved = Storage.getValue(VOLUME_KEY);
         if (saved instanceof Number && saved >= 0 && saved <= 100) {
@@ -53,7 +61,7 @@ class ComputerView extends WatchUi.View {
     // Back from something that covered the screen (the hang-up had ended the call): a new call.
     function onShow() as Void {
         _keepCall = false;
-        if (_client.closed()) {
+        if (_client.closed() && !_toMenu) {
             _volume = _speaker.volume();
             _left = false;
             _client = build();
@@ -89,6 +97,21 @@ class ComputerView extends WatchUi.View {
         _client.reconnect();
     }
 
+    // Opened straight into this screen, the menu is reached from here.
+    function isRoot() as Boolean {
+        return _root;
+    }
+
+    // The call is hung up and the menu takes the place of this screen.
+    function toMenu() as Void {
+        _toMenu = true;
+        _client.hangUp();
+    }
+
+    function wantsMenu() as Boolean {
+        return _toMenu;
+    }
+
     function louder() as Void {
         setVolume(_speaker.volume() + VOLUME_STEP);
     }
@@ -100,7 +123,7 @@ class ComputerView extends WatchUi.View {
     private function setVolume(volume as Number) as Void {
         _speaker.setVolume(volume);
         Storage.setValue(VOLUME_KEY, _speaker.volume());
-        WatchUi.requestUpdate();
+        _client.say("Volume " + _speaker.volume());
     }
 
     // Back: the hang-up goes to the server first, then the screen leaves; a second Back leaves at once.
@@ -161,91 +184,37 @@ class ComputerView extends WatchUi.View {
         _speaker.stop();
     }
 
+    // The client's state moved: the screen is drawn again when that changes what it shows.
     function changed() as Void {
-        WatchUi.requestUpdate();
+        if (!CallScreen.face(_client).key().equals(_shown)) {
+            WatchUi.requestUpdate();
+        }
     }
 
     function onUpdate(dc as Graphics.Dc) as Void {
+        var face = CallScreen.face(_client);
+        _shown = face.key();
         Draw.background(dc);
         var w = dc.getWidth();
         var h = dc.getHeight();
-        var fatal = _client.fatal;
-        var ended = _client.endedReason;
-        var headline;
-        var body = "";
-        var color = Graphics.COLOR_WHITE;
-        var hint = "";
-        if (_client.closed()) {
-            headline = "Hanging up";
-            color = Graphics.COLOR_LT_GRAY;
-        } else if (fatal != null) {
-            headline = "Unavailable";
-            body = fatal;
-        } else if (ended != null) {
-            headline = "Call ended";
-            body = ended;
-            hint = "Start: new call";
-        } else if (_client.stalled != null && !_client.recording) {
-            headline = "Not listening";
-            color = Graphics.COLOR_ORANGE;
-            body = _client.stalled as String;
-            hint = "Start: try again";
-        } else if (_client.recording && !_client.micLive) {
-            // the microphone has not delivered yet: nothing is being recorded, so no ring and no counter
-            headline = "Getting ready";
-            color = Graphics.COLOR_LT_GRAY;
-        } else if (_client.recording) {
-            headline = "Speak " + elapsed();
-            color = Graphics.COLOR_RED;
-            hint = "Start: send";
-            ring(dc, w, h);
-        } else if (!_client.hasCall()) {
-            headline = "Connecting";
-            color = Graphics.COLOR_LT_GRAY;
-        } else if (_client.sending()) {
-            headline = "Sending";
-            color = Graphics.COLOR_YELLOW;
-        } else if (_client.engine.equals("speaking") || _client.playbackActive) {
-            headline = "Speaking";
-            color = Graphics.COLOR_GREEN;
-            hint = "Start: interrupt";
-        } else if (_client.engine.equals("generating")) {
-            headline = "Thinking";
-            color = Graphics.COLOR_YELLOW;
-            body = _client.heard;
-            hint = "Start: interrupt";
-        } else {
-            headline = "Your turn";
-        }
-        var notice = _client.notice;
-        if (body.length() == 0 && notice != null) {
-            body = notice;
-        }
-        Draw.title(dc, "Computer");
-        dc.setColor(color, Graphics.COLOR_TRANSPARENT);
-        dc.drawText(w / 2, h * 29 / 100, Graphics.FONT_SMALL, headline, Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER);
-        if (body.length() > 0) {
-            Draw.paragraph(dc, body, 38, 72);
-        }
-        dc.setColor(Graphics.COLOR_DK_GRAY, Graphics.COLOR_TRANSPARENT);
-        dc.drawText(w / 2, h * 77 / 100, Graphics.FONT_XTINY, "vol " + _speaker.volume() + "  " + _client.linkText(),
-            Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER);
-        if (hint.length() > 0) {
-            Draw.hint(dc, hint);
-        }
-    }
-
-    private function elapsed() as String {
-        var s = (System.getTimer() - _client.recordingSince) / 1000;
-        return (s / 60) + ":" + (s % 60 < 10 ? "0" : "") + (s % 60);
-    }
-
-    // The red ring that shows the microphone is open.
-    private function ring(dc as Graphics.Dc, w as Number, h as Number) as Void {
-        dc.setColor(Graphics.COLOR_RED, Graphics.COLOR_TRANSPARENT);
-        dc.setPenWidth(6);
-        dc.drawCircle(w / 2, h / 2, (w < h ? w : h) / 2 - 3);
+        dc.setColor(face.color, Graphics.COLOR_TRANSPARENT);
+        dc.setPenWidth(RING);
+        dc.drawCircle(w / 2, h / 2, (w < h ? w : h) / 2 - RING / 2);
         dc.setPenWidth(1);
+        Draw.title(dc, face.title);
+        dc.setColor(face.color, Graphics.COLOR_TRANSPARENT);
+        var text = face.body.length() > 0;
+        Draw.fitted(dc, text ? 32 : 45, face.headline, [Graphics.FONT_LARGE, Graphics.FONT_MEDIUM, Graphics.FONT_SMALL]);
+        if (text) {
+            Draw.paragraph(dc, face.body, 44, 76);
+        }
+        if (face.foot.length() > 0) {
+            dc.setColor(Graphics.COLOR_ORANGE, Graphics.COLOR_TRANSPARENT);
+            dc.drawText(w / 2, h * 79 / 100, Graphics.FONT_XTINY, face.foot, Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER);
+        }
+        if (face.hint.length() > 0) {
+            Draw.hint(dc, face.hint);
+        }
     }
 }
 
@@ -277,10 +246,13 @@ class ComputerDelegate extends WatchUi.BehaviorDelegate {
         return true;
     }
 
-    // The Up hold: the one thing a call may need, a fresh start.
+    // The Up hold: a fresh start for the call, and the way to the menu when the app opened here.
     function onMenu() as Boolean {
         var menu = new WatchUi.Menu2({:title => "Computer"});
         menu.addItem(new WatchUi.MenuItem("New call", null, :reconnect, null));
+        if (_view.isRoot()) {
+            menu.addItem(new WatchUi.MenuItem("Menu", "Weather, Alarm", :menu, null));
+        }
         _view.keepCallWhileMenu();
         WatchUi.pushView(menu, new ComputerMenuDelegate(_view), WatchUi.SLIDE_LEFT);
         return true;
@@ -300,7 +272,11 @@ class ComputerMenuDelegate extends WatchUi.Menu2InputDelegate {
     }
 
     function onSelect(item as WatchUi.MenuItem) as Void {
-        _view.reconnect();
+        if (item.getId() == :menu) {
+            _view.toMenu();
+        } else {
+            _view.reconnect();
+        }
         WatchUi.popView(WatchUi.SLIDE_RIGHT);
     }
 }

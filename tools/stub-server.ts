@@ -376,8 +376,8 @@ Bun.serve({
     if (scenario === 'rejected' || auth !== `Bearer ${key}`) return json({ detail: 'key_rejected' }, 401)
 
     if (path === '/api/watch/log' && req.method === 'POST') {
-      const body = (await req.json().catch(() => ({}))) as { lines?: unknown[]; stored?: boolean }
-      for (const line of body.lines ?? []) console.log(`  watch log (${body.stored ? 'stored' : 'no call'}): ${JSON.stringify(line)}`)
+      const body = (await req.json().catch(() => ({}))) as { lines?: unknown[] }
+      for (const line of body.lines ?? []) console.log(`  watch log (no call): ${JSON.stringify(line)}`)
       return json({})
     }
     if (path.startsWith('/api/watch/voice/call')) return callRoute(req, url, path)
