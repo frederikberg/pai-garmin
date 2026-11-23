@@ -23,6 +23,7 @@
 // GET /__stub/call-fail?mode=<503|503after|hang>&count=<N>[&path=<substring>][&ms=<hang ms>]
 // (503after handles the request, then answers 503, so the watch repeats a request the server already
 // has); GET /__stub/call-expire forgets every call, so the watch gets 404 and opens a new one;
+// GET /__stub/call-forget?n=<n> makes the server lose the last n chunks of the turn; mode=bad_audio answers audio with 422;
 // GET /__stub/call-think?ms=<ms> sets how long it thinks before speaking; GET /__stub/call-end?reason=<text> ends every call; GET /__stub/call-owner?on=1 answers the open with 403 owner_only.
 const port = Number(process.env.PORT ?? 8099)
 const key = process.env.WATCH_KEY ?? 'stub-key'
@@ -118,6 +119,8 @@ type Call = {
   bytes: number
   chunks: number
   presses: Set<number>
+  pressApplied: number
+  ended: boolean
   state: string
   pieces: Map<number, Uint8Array>
   nextPiece: number
@@ -142,29 +145,27 @@ function setState(call: Call, state: string) {
   call.state = state
   emit(call, { state })
 }
-function addPiece(call: Call, freq: number, seconds: number, text?: string) {
+function addPiece(call: Call, freq: number, seconds: number) {
   const n = call.nextPiece++
   call.pieces.set(n, tonePcm(freq, seconds))
   emit(call, { piece: n, ref: `r${n}`, ms: Math.round(seconds * 1000) })
-  if (text) emit(call, { said: text, ref: `r${n}` })
 }
 function later(call: Call, ms: number, fn: () => void) {
   const generation = call.generation
   call.timers.push(setTimeout(() => generation === call.generation && fn(), ms))
 }
 function answer(call: Call) {
-  setState(call, 'generating')
   emit(call, { heard: `Stub heard ${call.bytes} bytes in ${call.chunks} chunks.` })
+  setState(call, 'generating')
   later(call, thinkMs, () => {
     setState(call, 'speaking')
-    const words = ['This is a stub answer', 'in three pieces,', 'for the watch to play.']
-    words.forEach((text, k) => later(call, 300 + k * 500, () => addPiece(call, 330 + k * 110, 0.8, text)))
+    for (let k = 0; k < 3; k++) later(call, 300 + k * 500, () => addPiece(call, 330 + k * 110, 0.8))
     later(call, 300 + 3 * 500 + 200, () => setState(call, 'listening'))
   })
 }
 function openCall(): Call {
   const call: Call = {
-    id: crypto.randomUUID(), events: [], waiters: [], expected: new Map(), bytes: 0, chunks: 0, presses: new Set(),
+    id: crypto.randomUUID(), events: [], waiters: [], expected: new Map(), bytes: 0, chunks: 0, presses: new Set(), pressApplied: 0, ended: false,
     state: 'ready', pieces: new Map(), nextPiece: 0, played: new Set(), generation: 0, timers: [],
   }
   calls.set(call.id, call)
@@ -189,6 +190,7 @@ async function callRoute(req: Request, url: URL, path: string): Promise<Response
       return json({ detail: 'late' }, 504)
     }
     if (fail.mode === '503') return json({ detail: 'injected' }, 503)
+    if (fail.mode === 'bad_audio') return json({ detail: 'bad_audio' }, 422)
     // 503after falls through: the request is handled, the answer is replaced below
     const real = await callRoute2(req, url, sub)
     void real
@@ -212,13 +214,18 @@ async function callRoute2(req: Request, url: URL, sub: string): Promise<Response
     return json({})
   }
   if (!call) return json({ detail: 'unknown call' }, 404)
+  // an ended call keeps answering its events, and nothing else
+  if (call.ended && rest !== '/events') return json({ detail: 'ended' }, 404)
 
   if (rest === '/audio' && req.method === 'POST') {
     const turn = Number(url.searchParams.get('turn'))
     const seq = Number(url.searchParams.get('seq'))
+    const afterPress = Number(url.searchParams.get('after_press') ?? 0)
+    // a new turn's audio waits (at most 3 s) until the press before it has been applied
+    for (let waited = 0; call.pressApplied < afterPress && waited < 3000; waited += 100) await new Promise((r) => setTimeout(r, 100))
     const body = new Uint8Array(await req.arrayBuffer())
     const expected = call.expected.get(turn) ?? 0
-    console.log(`  audio turn ${turn} seq ${seq} ${body.length} B ${req.headers.get('content-type')} (expected ${expected})`)
+    console.log(`  audio turn ${turn} seq ${seq} ${body.length} B ${req.headers.get('content-type')} after_press ${afterPress} (expected ${expected})`)
     if (seq > expected) return json({ next_seq: expected }, 409)
     if (seq === expected) {
       call.expected.set(turn, expected + 1)
@@ -228,12 +235,13 @@ async function callRoute2(req: Request, url: URL, sub: string): Promise<Response
     return json({ next_seq: call.expected.get(turn) })
   }
   if (rest === '/command' && req.method === 'POST') {
-    const body = (await req.json().catch(() => ({}))) as { action?: string; press?: number }
+    const body = (await req.json().catch(() => ({}))) as { action?: string; press?: number; turn?: number }
     const press = Number(body.press)
-    if (body.action !== 'press' || !Number.isInteger(press)) return json({ detail: 'bad command' }, 422)
-    console.log(`  press ${press} in state ${call.state}`)
+    if (body.action !== 'press' || !Number.isInteger(press) || !Number.isInteger(body.turn)) return json({ detail: 'bad command' }, 422)
+    console.log(`  press ${press} for turn ${body.turn} in state ${call.state}`)
     if (call.presses.has(press)) return json({})
     call.presses.add(press)
+    call.pressApplied = Math.max(call.pressApplied, press)
     const unheard = [...call.pieces.keys()].some((n) => !call.played.has(n))
     if (call.state === 'generating' || call.state === 'speaking' || unheard) {
       call.generation++
@@ -342,12 +350,21 @@ Bun.serve({
     }
     if (path === '/__stub/call-end') {
       const reason = url.searchParams.get('reason') ?? 'idle'
-      calls.forEach((call) => emit(call, { ended: reason }))
+      calls.forEach((call) => {
+        call.ended = true
+        emit(call, { ended: reason })
+      })
       return json({ ended: reason })
     }
     if (path === '/__stub/call-think') {
       thinkMs = Number(url.searchParams.get('ms') ?? 900)
       return json({ thinkMs })
+    }
+    if (path === '/__stub/call-forget') {
+      // the server loses the last n chunks of every turn: the next chunk answers 409 with an earlier next_seq
+      const n = Number(url.searchParams.get('n') ?? 1)
+      calls.forEach((call) => call.expected.forEach((v, turn) => call.expected.set(turn, Math.max(0, v - n))))
+      return json({ forgot: n })
     }
     if (path === '/__stub/call-owner') {
       ownerOnly = url.searchParams.get('on') === '1'
