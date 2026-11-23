@@ -16,8 +16,6 @@
 // through Garmin's image service, which cannot reach a local server.
 // Switch it on GET /__stub/weather?name=<weather scenario>.
 //
-// GET /api/watch/voice/test lists two tone clips (one part, three parts) for the watch's audio test.
-//
 // The Computer call (/api/watch/voice/call...) is simulated: opening it queues the state and one ready
 // piece; the audio of a turn must arrive with consecutive seq numbers (a gap answers 409); the press
 // that ends a turn makes the stub "think", then answer with three pieces and sentences; a press during
@@ -101,30 +99,9 @@ function weatherAnswer(name: string) {
 
 // ---- the Computer call
 
-const RATE = 16000
-// A complete WAV file (16 kHz mono 16-bit, exact sizes) holding a sine tone with short fades
-function toneWav(freq: number, seconds: number): Uint8Array {
-  const samples = Math.round(RATE * seconds)
-  const out = new DataView(new ArrayBuffer(44 + samples * 2))
-  const text = (at: number, s: string) => [...s].forEach((c, i) => out.setUint8(at + i, c.charCodeAt(0)))
-  text(0, 'RIFF')
-  out.setUint32(4, 36 + samples * 2, true)
-  text(8, 'WAVEfmt ')
-  out.setUint32(16, 16, true)
-  out.setUint16(20, 1, true)
-  out.setUint16(22, 1, true)
-  out.setUint32(24, RATE, true)
-  out.setUint32(28, RATE * 2, true)
-  out.setUint16(32, 2, true)
-  out.setUint16(34, 16, true)
-  text(36, 'data')
-  out.setUint32(40, samples * 2, true)
-  for (let i = 0; i < samples; i++) {
-    const fade = Math.min(1, i / (RATE * 0.02), (samples - i) / (RATE * 0.02))
-    out.setInt16(44 + i * 2, Math.round(Math.sin((2 * Math.PI * freq * i) / RATE) * 9000 * fade), true)
-  }
-  return new Uint8Array(out.buffer)
-}
+// Ogg Opus tone files (24 kHz mono, 1.5 s each) standing in for the server's pieces
+const pieceFiles = [440, 550, 660].map((hz) => Bun.file(new URL(`./stub-pieces/tone${hz}.opus`, import.meta.url)))
+const PIECE_MS = 1500
 
 type CallEvent = Record<string, unknown> & { i: number }
 type Call = {
@@ -161,10 +138,10 @@ function setState(call: Call, state: string) {
   call.state = state
   emit(call, { state })
 }
-function addPiece(call: Call, freq: number, seconds: number) {
+async function addPiece(call: Call, k: number) {
   const n = call.nextPiece++
-  call.pieces.set(n, toneWav(freq, seconds))
-  emit(call, { piece: n, ref: `r${n}`, ms: Math.round(seconds * 1000) })
+  call.pieces.set(n, new Uint8Array(await pieceFiles[k % pieceFiles.length].arrayBuffer()))
+  emit(call, { piece: n, ref: `r${n}`, ms: PIECE_MS })
 }
 function later(call: Call, ms: number, fn: () => void) {
   const generation = call.generation
@@ -175,7 +152,7 @@ function answer(call: Call) {
   setState(call, 'generating')
   later(call, thinkMs, () => {
     setState(call, 'speaking')
-    for (let k = 0; k < 3; k++) later(call, 300 + k * 500, () => addPiece(call, 330 + k * 110, 0.8))
+    for (let k = 0; k < 3; k++) later(call, 300 + k * 500, () => void addPiece(call, k))
     later(call, 300 + 3 * 500 + 200, () => setState(call, 'listening'))
   })
 }
@@ -186,7 +163,6 @@ function openCall(): Call {
   }
   calls.set(call.id, call)
   setState(call, 'ready')
-  addPiece(call, 440, 1.1)
   setState(call, 'listening')
   return call
 }
@@ -399,19 +375,6 @@ Bun.serve({
     const auth = req.headers.get('authorization')
     if (scenario === 'rejected' || auth !== `Bearer ${key}`) return json({ detail: 'key_rejected' }, 401)
 
-    if (path === '/api/watch/voice/test' && req.method === 'GET') {
-      return json({
-        variants: [
-          { id: 'wav16', label: 'WAV 16 kHz', fmt: 'wav', rate: 16000, parts: 1 },
-          { id: 'wav16_x3', label: 'WAV 16 kHz, 3 parts', fmt: 'wav', rate: 16000, parts: 3 },
-        ],
-      })
-    }
-    const testPart = path.match(/^\/api\/watch\/voice\/test\/([^/]+)\/(\d+)$/)
-    if (testPart && req.method === 'GET') {
-      const seconds = testPart[1].endsWith('_x3') ? 1.5 : 4
-      return new Response(toneWav(330 + 110 * Number(testPart[2]), seconds), { headers: { 'content-type': 'application/octet-stream' } })
-    }
     if (path.startsWith('/api/watch/voice/call')) return callRoute(req, url, path)
     if (path === '/api/watch/weather' && req.method === 'GET') {
       if (weather === 'key_rejected') return json({ detail: 'key_rejected' }, 401)

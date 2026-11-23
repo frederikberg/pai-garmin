@@ -67,7 +67,7 @@ The Computer screen holds one call at a time over plain requests. All routes are
 | `POST …/call/{id}/audio?turn=<t>&seq=<n>&after_press=<k>`, `Content-Type: audio/ogg`, body = the next bytes of the turn's Ogg Opus stream | `200 {"next_seq": n+1}`; a repeated `seq` is ignored (`200`); a gap answers `409 {"next_seq": <expected>}`; `422 bad_audio` when the turn cannot be decoded any more |
 | `POST …/call/{id}/command` `{"action": "press", "press": <n>, "turn": <t>}` | `200 {}`; a repeated press number is ignored |
 | `GET …/call/{id}/events?after=<cursor>&wait=<s>` | short poll, `wait` is 1: `{"cursor": c, "events": [...]}` with only the events after `after` |
-| `GET …/call/{id}/piece/{n}` | `application/octet-stream`, a complete WAV file (RIFF header with exact sizes, 16 kHz mono 16-bit); `404` for a piece that was cleared or already played |
+| `GET …/call/{id}/piece/{n}` | `application/octet-stream`, a complete Ogg Opus file (mono, declared to the player as Ogg, Opus, 24 kHz, mono), one sentence of the answer (at most about 8 s); `404` for a piece that was cleared or already played |
 | `POST …/call/{id}/played` `{"n": <k>}` | `200 {}`, piece `k` played through |
 | `POST …/call/{id}/log` `{"sent_t": <ms>, "lines": [{"t": <ms>, "ev": "<name>", …}]}` | `200 {}`, what the watch saw: a device line at the start, request errors with their codes and the first retries, round trips of slow requests (and of every 20th), the first chunk of a turn (size, whether it starts with `OggS`), the first playback and its states, capture and playback errors, free memory. `t` and `sent_t` are the watch's uptime in milliseconds, so a late batch can be placed in time. After an overflow the first 20 lines stay and a `log_dropped` line counts the rest |
 | `DELETE …/call/{id}` | `200 {}`, hangs up (also for a call that already ended) |
@@ -80,17 +80,15 @@ A turn the watch cannot finish (a `422`, a `409` it cannot repair, a capture fai
 
 Events carry their own index `i`, which the watch uses to skip what it saw. Each is one of:
 
-- `{"state": "ready"|"listening"|"generating"|"speaking"}`; the watch starts recording on `listening` once nothing is left to play
+- `{"state": "ready"|"listening"|"generating"|"speaking"}`; the watch records again on `listening` once nothing is left to play
 - `{"piece": n, "ref": r, "ms": d}`, a playable piece
 - `{"clear": true, "dropped": k}`, drop every unplayed piece and stop playback
 - `{"heard": "<text>"}`, once per turn before the state goes to `generating`, shown while the answer is being generated
 - `{"notice": {"code": "…", "text": "…"}}`, its text shown briefly on screen. `heard_nothing` (a press had nothing to answer) changes nothing else: listening goes on. `turn_timed_out` (an open turn went without a press for too long, and the server dropped what it heard) makes the watch start a new turn with a new Ogg Opus stream, `seq` 0 and `after_press` at the current press count, without a press
 - `{"ended": "<reason>"}`, the call is over; Start opens a new one
 
-Each piece plays through its own audio source, one after the other. A piece is over when the player says it stopped or, if it never does, a little after the length the event gave (`ms`, else the WAV's own); the next one starts then and the watch reports it as played. Recording begins after the last piece in the same way, without waiting for the player.
+Each piece plays through its own audio source, one after the other. A piece is over when the player says it stopped or, if it never does, a little after the length the event gave (`ms`, else 8 s); the next one starts then and the watch reports it as played. Recording begins after the last piece in the same way, without waiting for the player, after a short "your turn" cue the watch plays itself.
+
+The watch plays its own cues, never from the network: a short high beep when its press ends the turn (after the microphone has stopped), two rising notes when the answer is over and listening begins again, and a low falling pair when the call stops. The server sends no ready phrase and no turn-taken tick. Listening begins when the screen opens, before the call exists: the first turn's audio is kept (about half a minute at most) and goes out, as turn 1 with `seq` 0, once the open has answered. If the open still fails after five tries the cue sounds, the microphone stops and the reason stays on screen. The watch hangs up before the screen leaves: the `DELETE` goes first, then the rest of the log, and the screen waits for them for a few seconds.
 
 The phone link carries one request at a time, so the watch sends one request at a time, in this order: a press, audio, played reports, pieces, the log when it is due (every 15 s or 20 lines, sooner after a failure, and at hang-up), the events. The events are asked for with the short wait and jump the queue after 5 s without one. A log batch carries a `batch` number, which stays the same when the batch is sent again.
-
-## Audio test
-
-`GET /api/watch/voice/test` answers `{"variants": [{"id": "…", "label": "…", "fmt": "ogg"|"wav", "rate": 16000|24000, "parts": <n>}]}`, the test clips of the watch's audio test screen. `GET /api/watch/voice/test/{id}/{part}` answers `application/octet-stream`, one complete file: Ogg Opus mono at the variant's rate for `ogg`, 16 kHz mono WAV for `wav`. The screen downloads the parts of the chosen variant one request at a time, plays each through its own audio source (the next part downloads while one plays) and shows the bytes, the download time of each part, the gap between parts and the volume.
