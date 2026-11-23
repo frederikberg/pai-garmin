@@ -13,12 +13,14 @@ import Toybox.Timer;
 class Recorder {
     const WINDOW_BYTES = 1024;
     private var _client as CallClient;
+    private var _logged as Boolean = false;
 
     function initialize(client as CallClient) {
         _client = client;
     }
 
-    function start() as Boolean {
+    // 0 when recording began, 1 when the watch cannot capture Ogg Opus, 2 when starting failed.
+    function start() as Number {
         var format = {
             :containerFormat => Audio.CONTAINER_OGG,
             :codec => Audio.CODEC_OPUS,
@@ -26,21 +28,32 @@ class Recorder {
             :channels => Audio.CHANNEL_MONO
         };
         if (!Capture.isFormatSupported(format)) {
-            return false;
+            Trace.add("capture_format", {"opus" => false});
+            return 1;
+        }
+        // noise reduction and echo cancellation, where the watch has them: the speaker's tail goes
+        // into the microphone when recording restarts after an answer
+        var filters = [];
+        if (Capture.getSupportedFilters().indexOf(Capture.FILTER_NREC) >= 0) {
+            filters = [Capture.FILTER_NREC];
         }
         try {
-            Capture.initializeAudioCapture(self, {
+            var settings = Capture.initializeAudioCapture(self, {
                 :format => format,
                 :windowSize => WINDOW_BYTES,
                 :windowFilledBehavior => Capture.WINDOW_FILLED_CONTINUE,
-                :filters => []
+                :filters => filters
             });
             Capture.start();
+            if (!_logged) {
+                _logged = true;
+                Trace.add("capture_start", {"window" => settings[:windowSize], "filters" => filters});
+            }
         } catch (ex) {
             Trace.add("capture_init", {"error" => ex.getErrorMessage()});
-            return false;
+            return 2;
         }
-        return true;
+        return 0;
     }
 
     function stop() as Void {
@@ -86,6 +99,10 @@ class PcmSource extends Output.StreamingAudioSource {
     function push(data as ByteArray) as Void {
         _queue.add(data);
         fill(getBufferSize());
+    }
+
+    function sealed() as Boolean {
+        return _sealed;
     }
 
     // No more data for this stream: the player plays what it holds and stops.
@@ -139,6 +156,8 @@ class Speaker {
     private var _ends as Array<Array<Number>> = [];
     private var _fedMs as Number = 0;
     private var _quietSince as Number = 0;
+    private var _lastPos as Number = 0;
+    private var _played as Boolean = false;
     private var _volume as Number;
 
     function initialize(client as CallClient, volume as Number) {
@@ -180,7 +199,11 @@ class Speaker {
                 source.push(pcm);
             }
         } catch (ex) {
-            Trace.add("play_error", {"error" => ex.getErrorMessage()});
+            Trace.add("play_error", {"n" => n, "error" => ex.getErrorMessage()});
+            // a piece that cannot play counts as played, so the server's picture keeps its rhythm
+            _client.piecePlayed(n);
+            reportDone(_fedMs + 1000000);
+            release();
             _client.playbackFailed(0);
             return;
         }
@@ -188,6 +211,10 @@ class Speaker {
         _fedMs += length;
         _ends.add([n, _fedMs]);
         _quietSince = 0;
+        if (!_played) {
+            _played = true;
+            Trace.add("first_play", {"n" => n, "bytes" => pcm.size(), "ms" => length});
+        }
     }
 
     // Stops at once; the pieces that played through are reported first.
@@ -206,6 +233,7 @@ class Speaker {
     }
 
     function onPosition(position as Number) as Void {
+        _lastPos = position;
         reportDone(position);
         if (_ends.size() == 0 && !_client.moreToPlay()) {
             var now = System.getTimer();
@@ -225,11 +253,15 @@ class Speaker {
     function onState(state as Output.PlaybackState) as Void {
         Trace.add("play_state", {"state" => state});
         if (state == Output.PLAYBACK_ERROR) {
-            _client.playbackFailed(state);
+            // the pieces that cannot play count as played
+            reportDone(_fedMs + 1000000);
             release();
-        }
-        if (state == Output.PLAYBACK_STOPPED && _source != null) {
-            reportDone(_fedMs + 1000);
+            _client.playbackFailed(state);
+        } else if (state == Output.PLAYBACK_STOPPED && _source != null) {
+            // a stop of the player's own end plays everything; a stop from outside (a call, another
+            // app) counts only what had played
+            var source = _source;
+            reportDone(source != null && source.sealed() ? _fedMs + 1000000 : _lastPos);
             release();
             _client.playbackIdle();
         }
@@ -253,6 +285,7 @@ class Speaker {
     private function release() as Void {
         _source = null;
         _ends = [];
+        _lastPos = 0;
         Output.registerStateChangeHandler(null);
         Output.registerPeriodicUpdateHandler(PERIOD_MS, null);
     }

@@ -65,11 +65,15 @@ module CallLogic {
     }
 }
 
-// What the watch saw during a call, kept for the server's log route in bounded batches.
+// What the watch saw during a call, kept for the server's log route in bounded batches. When the
+// buffer overflows, the first lines (the cause of an outage) stay and the oldest of the later ones go.
 module Trace {
     const MAX_LINES = 80;
+    const KEEP_FIRST = 20;
     var lines as Array<Dictionary<String, Object>> = [];
     var dropped as Number = 0;
+    // the drop count a batch in flight reported
+    var reported as Number = 0;
 
     function add(ev as String, fields as Dictionary?) as Void {
         var line = {"t" => System.getTimer(), "ev" => ev} as Dictionary<String, Object>;
@@ -82,7 +86,10 @@ module Trace {
         System.println("call: " + line);
         lines.add(line);
         if (lines.size() > MAX_LINES) {
-            lines = lines.slice(lines.size() - MAX_LINES, null) as Array<Dictionary<String, Object>>;
+            var head = lines.slice(0, KEEP_FIRST) as Array<Dictionary<String, Object>>;
+            var tail = lines.slice(KEEP_FIRST + 1, null) as Array<Dictionary<String, Object>>;
+            lines = head;
+            lines.addAll(tail);
             dropped += 1;
         }
     }
@@ -91,6 +98,7 @@ module Trace {
     function batch(count as Number) as Array<Dictionary<String, Object>> {
         var n = lines.size() < count ? lines.size() : count;
         var out = lines.slice(0, n) as Array<Dictionary<String, Object>>;
+        reported = dropped;
         if (dropped > 0) {
             out.add({"t" => System.getTimer(), "ev" => "log_dropped", "count" => dropped} as Dictionary<String, Object>);
         }
@@ -100,6 +108,7 @@ module Trace {
     function confirm(count as Number) as Void {
         var n = lines.size() < count ? lines.size() : count;
         lines = lines.slice(n, null) as Array<Dictionary<String, Object>>;
-        dropped = 0;
+        dropped -= reported;
+        reported = 0;
     }
 }
