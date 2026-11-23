@@ -23,7 +23,7 @@ Back leaves a screen; Back on the first one exits the app.
 
 ## Computer
 
-An experiment with talking to the server from the wrist, on watches with audio. Entering the screen gives a short beep and buzz. Start begins recording (at most ten seconds, then it sends by itself), Start again sends the clip and the answer plays; Start during the answer stops it and records again. Up and Down change the volume, hold Up picks the reply format (`wav`, `wav8` or `opus`, see [api.md](api.md#voice)). The screen lists the capture format (Ogg Opus 16 kHz where the watch can, otherwise WAV 16 kHz), bytes sent, the response code, bytes received, the round trip in milliseconds, the reply format and volume, and free memory.
+An experiment with talking to the server from the wrist, on watches with audio. Entering the screen gives a short beep and buzz. Start begins recording (at most ten seconds, then it sends by itself), Start again sends the clip and the answer plays; Start during the answer stops it and records again. Up and Down change the volume, hold Up picks the reply format (`wav` or `wav8`, see [api.md](api.md#voice)). The screen lists the capture format (Ogg Opus 16 kHz where the watch can, otherwise WAV 16 kHz), bytes sent, the response code, bytes received, the round trip in milliseconds, the reply format and volume, and free memory.
 
 ## Weather
 

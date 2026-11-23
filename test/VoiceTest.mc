@@ -3,8 +3,8 @@ import Toybox.Test;
 
 (:test)
 function replyFormatsCycleAndWrap(logger as Logger) as Boolean {
-    return Voice.nextOut("wav").equals("wav8") && Voice.nextOut("wav8").equals("opus")
-        && Voice.nextOut("opus").equals("wav") && Voice.nextOut("other").equals("wav");
+    return Voice.nextOut("wav").equals("wav8") && Voice.nextOut("wav8").equals("wav")
+        && Voice.nextOut("other").equals("wav");
 }
 
 (:test)
