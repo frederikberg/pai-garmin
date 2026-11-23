@@ -1,3 +1,4 @@
+import Toybox.Application.Storage;
 import Toybox.Attention;
 import Toybox.Graphics;
 import Toybox.Lang;
@@ -14,6 +15,8 @@ import Toybox.WatchUi;
 class ComputerView extends WatchUi.View {
     const START_VOLUME = 70;
     const VOLUME_STEP = 10;
+    // where the volume is kept between openings
+    const VOLUME_KEY = "volume";
 
     private var _client as CallClient;
     private var _speaker as Speaker;
@@ -23,14 +26,23 @@ class ComputerView extends WatchUi.View {
 
     function initialize() {
         View.initialize();
+        var saved = Storage.getValue(VOLUME_KEY);
+        if (saved instanceof Number && saved >= 0 && saved <= 100) {
+            _volume = saved;
+        }
         _client = build();
         _speaker = new Speaker(_client, _volume);
         _recorder = new Recorder(_client);
         _client.start();
+        // listening has begun; a short buzz says so without a sound that could be recorded
+        if (Attention has :vibrate) {
+            Attention.vibrate([new Attention.VibeProfile(70, 100)]);
+        }
     }
 
     private function build() as CallClient {
-        var io = new CallIo(method(:startCapture), method(:stopCapture), method(:play), method(:stopPlayback), method(:changed));
+        var io = new CallIo(method(:startCapture), method(:stopCapture), method(:play), method(:stopPlayback), method(:changed),
+            method(:cue), method(:leave));
         return new CallClient(io, new CallEnv());
     }
 
@@ -74,13 +86,36 @@ class ComputerView extends WatchUi.View {
     }
 
     function louder() as Void {
-        _speaker.setVolume(_speaker.volume() + VOLUME_STEP);
-        WatchUi.requestUpdate();
+        setVolume(_speaker.volume() + VOLUME_STEP);
     }
 
     function quieter() as Void {
-        _speaker.setVolume(_speaker.volume() - VOLUME_STEP);
+        setVolume(_speaker.volume() - VOLUME_STEP);
+    }
+
+    private function setVolume(volume as Number) as Void {
+        _speaker.setVolume(volume);
+        Storage.setValue(VOLUME_KEY, _speaker.volume());
         WatchUi.requestUpdate();
+    }
+
+    // Back: the hang-up goes to the server first, then the screen leaves; a second Back leaves at once.
+    function back() as Boolean {
+        if (_client.closed()) {
+            return false;
+        }
+        _client.hangUp();
+        WatchUi.requestUpdate();
+        return true;
+    }
+
+    // The hang-up is over.
+    function leave() as Void {
+        WatchUi.popView(WatchUi.SLIDE_RIGHT);
+    }
+
+    function cue(kind as Number) as Void {
+        _speaker.cue(kind);
     }
 
     // the client's audio side
@@ -114,7 +149,10 @@ class ComputerView extends WatchUi.View {
         var body = "";
         var color = Graphics.COLOR_WHITE;
         var hint = "";
-        if (fatal != null) {
+        if (_client.closed()) {
+            headline = "Hanging up";
+            color = Graphics.COLOR_LT_GRAY;
+        } else if (fatal != null) {
             headline = "Unavailable";
             body = fatal;
         } else if (ended != null) {
@@ -219,8 +257,7 @@ class ComputerDelegate extends WatchUi.BehaviorDelegate {
     }
 
     function onBack() as Boolean {
-        _view.hangUp();
-        return false;
+        return _view.back();
     }
 }
 

@@ -53,10 +53,16 @@ class CallIo {
     var play as Method(n as Number, ms as Number, pcm as ByteArray) as Void;
     var stopPlayback as Method() as Void;
     var changed as Method() as Void;
+    // plays one of the watch's own cues (CallLogic.CUE_*)
+    var cue as Method(kind as Number) as Void;
+    // the hang-up is over: the screen may leave
+    var closed as Method() as Void;
 
     function initialize(startCapture as Method() as Number, stopCapture as Method() as Void,
             play as Method(n as Number, ms as Number, pcm as ByteArray) as Void, stopPlayback as Method() as Void,
-            changed as Method() as Void) {
+            changed as Method() as Void, cue as Method(kind as Number) as Void, closed as Method() as Void) {
+        self.cue = cue;
+        self.closed = closed;
         self.startCapture = startCapture;
         self.stopCapture = stopCapture;
         self.play = play;
@@ -101,8 +107,8 @@ class CallClient {
     const CHUNK_MAX = 6144;
     // pending audio while the link is down: about half a minute of Opus
     const BUFFER_MAX = 65536;
-    // fetched but not yet played audio: the piece playing and one more
-    const UNPLAYED_MAX = 130000;
+    // fetched but not yet played audio: the piece playing and the next ones
+    const UNPLAYED_MAX = 60000;
     const PIECE_TRIES = 6;
     // failed turns in a row before recording stops and the cause is shown
     const MAX_FAILS = 5;
@@ -124,7 +130,16 @@ class CallClient {
     // after a failure the log goes out sooner, but not sooner than this after the last one
     const LOG_URGENT_MS = 5000;
     const MEM_EVERY_MS = 15000;
-    const HANG_GRACE_MS = 4000;
+    // a hang-up waits at most this long for the server to hear it
+    const HANG_GRACE_MS = 5000;
+    // the log gets this long after the hang-up request before the screen leaves
+    const HANG_LOG_MS = 1500;
+    // the open is tried this often before the call is given up
+    const OPEN_TRIES = 5;
+    // the pause after a cue before the microphone opens, so the cue is not recorded
+    const CUE_GUARD_MS = 250;
+    // the length of a piece the server did not give one for
+    const PIECE_MS_DEFAULT = 8000;
 
     enum {
         OPEN,
@@ -188,6 +203,10 @@ class CallClient {
     private var _playEnd as Number = 0;
     private var _reported as Dictionary<Number, Boolean> = {};
     private var _logUrgent as Boolean = false;
+    private var _cueDue as Boolean = false;
+    private var _cuedSent as Boolean = false;
+    private var _hangDoneAt as Number = 0;
+    private var _closedSaid as Boolean = false;
     private var _logBatch as Number = 0;
     private var _failStreak as Number = 0;
     private var _lossTimes as Array<Number> = [];
@@ -228,7 +247,8 @@ class CallClient {
         var device = System.getDeviceSettings();
         Trace.add("device", {"part" => device.partNumber, "fw" => device.firmwareVersion, "audio" => Toybox has :Audio});
         _env.startClock(method(:tick), TICK_MS);
-        changed();
+        // listening begins before the call exists; the audio is kept until it does
+        startTurn();
     }
 
     // The Start button: send the turn that is being recorded, cut an answer, or begin a new call
@@ -245,14 +265,15 @@ class CallClient {
             _failStreak = 0;
             _lossTimes = [];
             _lanes[OPEN].notBefore = 0;
-            if (_call != null && !recording) {
+            _lanes[OPEN].failures = 0;
+            if (!recording) {
                 startTurn();
             }
         } else if (recording) {
             endTurn();
         } else if (busyAnswering()) {
             cut();
-        } else if (_call != null && !_endPending && !_restartTurn) {
+        } else if (!_endPending && !_restartTurn) {
             // between turns, Start begins the recording that did not begin by itself
             startTurn();
         } else {
@@ -277,7 +298,7 @@ class CallClient {
         resetCall();
         _hangId = old;
         endedReason = null;
-        changed();
+        startTurn();
     }
 
     function hangUp() as Void {
@@ -290,14 +311,18 @@ class CallClient {
         stopCapture();
         _io.stopPlayback.invoke();
         for (var i = 0; i < _lanes.size(); i++) {
-            _lanes[i].token += 1;
-            _lanes[i].busy = false;
+            // an open still on its way is answered later: its call is hung up then
+            if (i != OPEN) {
+                _lanes[i].token += 1;
+                _lanes[i].busy = false;
+            }
         }
-        _inflight = 0;
+        recalcInflight();
         _hangId = _call;
         _closeCall = _call;
         _call = null;
         _lanes[HANG].failures = 0;
+        _lanes[HANG].notBefore = 0;
         _lanes[LOG].failures = 0;
         _lanes[LOG].notBefore = 0;
         pump();
@@ -336,7 +361,17 @@ class CallClient {
         }
         if (_captureOpen) {
             _captureOpen = false;
+            cueSent();
             pump();
+        }
+    }
+
+    // The turn is over for the microphone: a short cue says the press was taken. It plays after the
+    // capture has stopped, so it is not in the turn.
+    private function cueSent() as Void {
+        if (_endPending && !_cuedSent && _turnBytes > 0) {
+            _cuedSent = true;
+            _io.cue.invoke(CallLogic.CUE_SENT);
         }
     }
 
@@ -376,6 +411,7 @@ class CallClient {
     function playbackIdle() as Void {
         playbackActive = false;
         forgetUnplayed();
+        _cueDue = true;
         _autoAt = _env.now() + AUTO_RECORD_DELAY_MS;
         changed();
     }
@@ -405,6 +441,7 @@ class CallClient {
         }
         if (playbackActive && _fed.size() == 0 && !_lanes[PIECE].busy && _pieces.size() == 0 && now >= _playEnd + PLAY_SLACK_MS) {
             playbackActive = false;
+            _cueDue = true;
             _autoAt = now + AUTO_RECORD_DELAY_MS;
             changed();
         }
@@ -450,6 +487,7 @@ class CallClient {
         recalcInflight();
         heard = "";
         _bufferFullLogged = false;
+        _cueDue = false;
         var started = _io.startCapture.invoke();
         if (started == 0) {
             recording = true;
@@ -459,7 +497,7 @@ class CallClient {
         } else if (started == 1) {
             recording = false;
             _captureOpen = false;
-            stalled = "This watch cannot capture Opus";
+            stopForGood("This watch cannot capture Opus", true);
             Trace.add("capture_unavailable", null);
         } else {
             recording = false;
@@ -471,6 +509,7 @@ class CallClient {
 
     private function endTurn() as Void {
         recording = false;
+        _cuedSent = false;
         _endPending = true;
         _stopAt = _env.now() + STOP_WAIT_MS;
         _io.stopCapture.invoke();
@@ -561,10 +600,8 @@ class CallClient {
             }
         }
         if (_closing) {
-            if (now - _closedAt > HANG_GRACE_MS || (!_lanes[HANG].busy && !_lanes[LOG].busy && _hangId == null && (Trace.lines.size() == 0 || _closeCall == null))) {
-                _env.stopClock();
-            }
             pump();
+            finishClosing(now);
             return;
         }
         if (_restartTurn && now >= _stopAt) {
@@ -577,10 +614,12 @@ class CallClient {
         if (_endPending && _captureOpen && now >= _stopAt) {
             Trace.add("capture_no_complete", null);
             _captureOpen = false;
+            cueSent();
         }
         if (_fatalNotSet && _env.check() != 1) {
             fatal = null;
             _fatalNotSet = false;
+            startTurn();
         }
         endPlaybackByTimer(now);
         if (now - _lastMem > MEM_EVERY_MS) {
@@ -595,9 +634,36 @@ class CallClient {
         }
     }
 
+    // The hang-up is over when the server has heard it (and had a moment for the log), or when it has
+    // had its time: then the screen may leave and the clock stops.
+    private function finishClosing(now as Number) as Void {
+        if (_closedSaid) {
+            return;
+        }
+        var heard = _hangId == null && !_lanes[HANG].busy && !_lanes[OPEN].busy;
+        if (heard && _hangDoneAt == 0) {
+            _hangDoneAt = now;
+        }
+        var logDone = Trace.lines.size() == 0 || _closeCall == null || _lanes[LOG].failures > 0
+            || (_hangDoneAt > 0 && now - _hangDoneAt >= HANG_LOG_MS);
+        if ((heard && logDone) || now - _closedAt > HANG_GRACE_MS) {
+            _closedSaid = true;
+            _env.stopClock();
+            Trace.add("hangup_done", {"heard" => heard});
+            _io.closed.invoke();
+        }
+    }
+
     private function autoRecord(now as Number) as Void {
         if (_call != null && !recording && !_endPending && !_turnSent && engine.equals("listening")
                 && !playbackActive && !moreToPlay() && now >= _autoAt && fatal == null && stalled == null) {
+            if (_cueDue) {
+                // "your turn": the microphone opens once the cue has played, so it is not recorded
+                _cueDue = false;
+                _io.cue.invoke(CallLogic.CUE_YOUR_TURN);
+                _autoAt = now + CallLogic.cueMs(CallLogic.CUE_YOUR_TURN) + CUE_GUARD_MS;
+                return;
+            }
             startTurn();
         }
     }
@@ -623,13 +689,12 @@ class CallClient {
         sendPressIfDrained();
         var call = _call;
         if (_closing) {
+            // the hang-up first, then what is left of the log
             var closed = _closeCall;
-            var logged = Trace.lines.size() == 0 || closed == null || _lanes[LOG].failures > 0;
-            if (closed != null && ready(LOG) && Trace.lines.size() > 0) {
-                sendLog(closed);
-            }
-            if (logged && ready(HANG) && _hangId != null) {
+            if (_hangId != null && ready(HANG)) {
                 sendHang();
+            } else if (_hangId == null && closed != null && ready(LOG) && Trace.lines.size() > 0) {
+                sendLog(closed);
             }
             return;
         }
@@ -681,9 +746,8 @@ class CallClient {
         var l = _lanes[lane];
         var check = _env.check();
         if (check == 1) {
-            fatal = "Set the server in Garmin Connect";
+            stopForGood("Set the server in Garmin Connect", false);
             _fatalNotSet = true;
-            changed();
             return;
         }
         if (check == 2) {
@@ -839,13 +903,13 @@ class CallClient {
             return;
         }
         if (code == Communications.SECURE_CONNECTION_REQUIRED || code == Communications.UNSUPPORTED_CONTENT_TYPE_IN_RESPONSE) {
-            fatal = "Request refused, code " + code;
+            stopForGood("Request refused, code " + code, false);
             Trace.add("request_refused", {"lane" => _lanes[lane].name, "code" => code});
         } else if (code == 401) {
-            fatal = "Watch key rejected";
+            stopForGood("Watch key rejected", false);
             Trace.add("key_rejected", {"lane" => _lanes[lane].name});
         } else if (code == 403 && lane == OPEN) {
-            fatal = "Computer is only for the owner";
+            stopForGood("Computer is only for the owner", false);
             Trace.add("owner_only", null);
         } else if (code == 404 && lane == PIECE) {
             // cleared or already played
@@ -882,6 +946,12 @@ class CallClient {
     private function succeeded(lane as Number, code as Number, data as Dictionary or String or ByteArray or Null) as Boolean {
         if (lane == OPEN) {
             var id = data instanceof Dictionary ? data["call"] as Object? : null;
+            if (id instanceof String && _closing) {
+                // the screen has left: the call that just opened is hung up
+                _hangId = id;
+                _closeCall = id;
+                return true;
+            }
             if (id instanceof String) {
                 _call = id;
                 Trace.add("opened", {"call" => id});
@@ -912,7 +982,9 @@ class CallClient {
                 playbackActive = true;
                 nextPiece();
                 var ms = piece["ms"] as Number;
-                var length = ms > 0 ? ms : CallLogic.wavMs(data.size());
+                var length = ms > 0 ? ms : PIECE_MS_DEFAULT;
+                var started = _lanes[PIECE].sentAt;
+                Trace.add("piece_fetch", {"n" => n, "bytes" => data.size(), "t0" => started, "ms" => _env.now() - started});
                 var now = _env.now();
                 _playEnd = (_playEnd > now ? _playEnd : now) + length;
                 _fed.add([n, _playEnd]);
@@ -962,6 +1034,10 @@ class CallClient {
         var l = _lanes[lane];
         l.failures += 1;
         l.notBefore = _env.now() + CallLogic.backoff(l.failures);
+        if (lane == OPEN && _call == null && !_closing && l.failures >= OPEN_TRIES) {
+            stopForGood("Cannot connect (" + codeText(code) + ")", true);
+            return;
+        }
         // the first retries say what went wrong; a long outage then adds a line only now and then
         if (lane != LOG) {
             _logUrgent = true;
@@ -976,6 +1052,18 @@ class CallClient {
                 nextPiece();
             }
         }
+    }
+
+    // What a failed request's code says, for the screen.
+    private function codeText(code as Number) as String {
+        if (code == Communications.BLE_CONNECTION_UNAVAILABLE) {
+            return "no phone";
+        } else if (code == Communications.NETWORK_REQUEST_TIMED_OUT) {
+            return "no answer";
+        } else if (code >= 500) {
+            return "server error " + code;
+        }
+        return "code " + code;
     }
 
     // A request the server will never take is not tried again.
@@ -1082,6 +1170,22 @@ class CallClient {
         }
     }
 
+    // The call cannot go on: the microphone and the player stop, the error cue sounds and the reason
+    // stays on screen. A fatal reason ends Computer; a stalled one waits for Start.
+    private function stopForGood(reason as String, retryable as Boolean) as Void {
+        Trace.add("stopped", {"reason" => reason});
+        stopCapture();
+        discardTurn();
+        _io.stopPlayback.invoke();
+        if (retryable) {
+            stalled = reason;
+        } else {
+            fatal = reason;
+        }
+        _io.cue.invoke(CallLogic.CUE_ERROR);
+        changed();
+    }
+
     // A recording that failed: the next try waits longer each time, and after a few the cause stays
     // on screen until Start tries again.
     private function recordFailed(cause as String) as Void {
@@ -1090,7 +1194,7 @@ class CallClient {
         _autoAt = _env.now() + (wait > 30000 ? 30000 : wait);
         Trace.add("record_failed", {"cause" => cause, "n" => _failStreak});
         if (_failStreak >= MAX_FAILS) {
-            stalled = cause;
+            stopForGood(cause, true);
         } else {
             setNotice(cause);
         }
@@ -1158,6 +1262,7 @@ class CallClient {
             if ("heard_nothing".equals(code)) {
                 // the press had nothing to answer: listening goes on
                 _turnSent = false;
+                _cueDue = true;
             } else if ("turn_timed_out".equals(code)) {
                 restartTurn();
             }
@@ -1166,6 +1271,7 @@ class CallClient {
             endedReason = reason instanceof String ? reason : "ended";
             Trace.add("ended", {"reason" => endedReason});
             resetCall();
+            _io.cue.invoke(CallLogic.CUE_ERROR);
         } else if (e["heard"] instanceof String) {
             heard = e["heard"] as String;
         }
@@ -1189,8 +1295,8 @@ class CallClient {
         resetCall();
         var n = recent.size();
         if (n >= MAX_LOSSES) {
-            stalled = "The server keeps losing the call";
             Trace.add("calls_lost", {"n" => n});
+            stopForGood("The server keeps losing the call", true);
         } else {
             if (n >= 2) {
                 var wait = 2000 * (1 << (n - 2));

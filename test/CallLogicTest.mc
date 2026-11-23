@@ -22,8 +22,14 @@ function aConflictIsAckedRewoundOrLost(logger as Logger) as Boolean {
 }
 
 (:test)
-function aWavFilesLengthComesFromItsSize(logger as Logger) as Boolean {
-    return CallLogic.wavMs(36278) == 1132 && CallLogic.wavMs(44 + 32000) == 1000 && CallLogic.wavMs(10) == 0;
+function cuesAreDistinctCompleteWavFiles(logger as Logger) as Boolean {
+    var sent = CallLogic.cueWav(CallLogic.CUE_SENT);
+    var turn = CallLogic.cueWav(CallLogic.CUE_YOUR_TURN);
+    var error = CallLogic.cueWav(CallLogic.CUE_ERROR);
+    // 44 bytes of header, then 16-bit samples at 8 kHz
+    return sent.size() == 44 + 8 * 90 * 2 && turn.size() == 44 + 8 * 190 * 2 && error.size() == 44 + 8 * 420 * 2
+        && CallLogic.cueMs(CallLogic.CUE_YOUR_TURN) == 190 && sent[0] == 0x52 && sent[8] == 0x57 && sent[36] == 0x64
+        && CallLogic.cueNotes(CallLogic.CUE_SENT)[0][0] != CallLogic.cueNotes(CallLogic.CUE_YOUR_TURN)[0][0];
 }
 
 (:test)
