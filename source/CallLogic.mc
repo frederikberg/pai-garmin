@@ -22,10 +22,14 @@ module CallLogic {
     }
 
     // What an audio chunk's 409 means: the server expects chunk `expected` next while the watch
-    // holds chunk `sent` unacknowledged. Returns "acked" when the server already has it (also when it
-    // is ahead), "lost" when it misses data the watch no longer has.
-    function afterConflict(sent as Number, expected as Number) as String {
-        return expected > sent ? "acked" : "lost";
+    // holds chunk `sent` unacknowledged, and still has the acknowledged chunks from `base` on.
+    // "acked": the server already has it (also when it is ahead); "rewind": it misses chunks the
+    // watch still holds; "lost": it misses chunks the watch no longer has.
+    function afterConflict(sent as Number, expected as Number, base as Number) as String {
+        if (expected > sent) {
+            return "acked";
+        }
+        return expected >= base ? "rewind" : "lost";
     }
 
     // A 44-byte WAV header for 16-bit mono PCM of a stream whose length is not known: the player

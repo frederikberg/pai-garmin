@@ -15,9 +15,10 @@ function onlyTransportAndServerErrorsAreRetried(logger as Logger) as Boolean {
 }
 
 (:test)
-function aConflictAheadOfTheChunkCountsAsAcknowledged(logger as Logger) as Boolean {
-    return CallLogic.afterConflict(3, 4).equals("acked") && CallLogic.afterConflict(3, 7).equals("acked")
-        && CallLogic.afterConflict(3, 3).equals("lost") && CallLogic.afterConflict(3, 0).equals("lost");
+function aConflictIsAckedRewoundOrLost(logger as Logger) as Boolean {
+    return CallLogic.afterConflict(3, 4, 0).equals("acked") && CallLogic.afterConflict(3, 7, 0).equals("acked")
+        && CallLogic.afterConflict(3, 3, 0).equals("rewind") && CallLogic.afterConflict(3, 1, 1).equals("rewind")
+        && CallLogic.afterConflict(3, 0, 2).equals("lost");
 }
 
 (:test)

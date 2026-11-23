@@ -62,6 +62,8 @@ class CallClient {
     // fetched but not yet played PCM
     const UNPLAYED_MAX = 160000;
     const PIECE_TRIES = 6;
+    // 409s in a row on one turn before it is given up
+    const MAX_CONFLICTS = 4;
     const AUTO_RECORD_DELAY_MS = 400;
     const TURN_SENT_MS = 6000;
     const STOP_WAIT_MS = 1500;
@@ -96,7 +98,6 @@ class CallClient {
     var fatal as String? = null;
     var engine as String = "";
     var heard as String = "";
-    var said as String = "";
     var notice as String? = null;
     var endedReason as String? = null;
     var recording as Boolean = false;
@@ -127,6 +128,16 @@ class CallClient {
     private var _autoAt as Number = 0;
 
     private var _press as Number = 0;
+    // the last press sent before the current turn began; the server holds the turn's audio for it
+    private var _afterPress as Number = 0;
+    // the turn's chunks that are acknowledged, kept (bounded) in case the server asks for them again
+    private var _sentBodies as Array<ByteArray> = [];
+    private var _sentBytes as Number = 0;
+    private var _sentBase as Number = 0;
+    private var _logHold as Boolean = false;
+    private var _conflicts as Number = 0;
+    // bodies sent before, to go again with their own numbers
+    private var _resend as Array<ByteArray> = [];
     private var _holdUntil as Number = 0;
     private var _commands as Array<Dictionary<String, Object>> = [];
     private var _hangId as String? = null;
@@ -148,10 +159,10 @@ class CallClient {
     }
 
     // The Start button: send the turn that is being recorded, cut an answer, or begin a new call
-    // after the old one ended. Between answers there is nothing to press.
-    function press() as Void {
+    // after the old one ended; false when there was nothing to press for.
+    function press() as Boolean {
         if (fatal != null || _closing) {
-            return;
+            return false;
         }
         if (_call == null && endedReason != null) {
             reconnect();
@@ -159,7 +170,10 @@ class CallClient {
             endTurn();
         } else if (busyAnswering()) {
             cut();
+        } else {
+            return false;
         }
+        return true;
     }
 
     // A new call in place of the current one.
@@ -286,6 +300,12 @@ class CallClient {
         _chunks = [];
         _chunkBytes = 0;
         _body = null;
+        _resend = [];
+        _sentBodies = [];
+        _sentBytes = 0;
+        _sentBase = 0;
+        _conflicts = 0;
+        _afterPress = _press;
         _lanes[AUDIO].token += 1;
         _lanes[AUDIO].busy = false;
         recalcInflight();
@@ -326,6 +346,9 @@ class CallClient {
         _chunks = [];
         _chunkBytes = 0;
         _body = null;
+        _resend = [];
+        _sentBodies = [];
+        _sentBytes = 0;
         _endPending = false;
         _lanes[AUDIO].token += 1;
         _lanes[AUDIO].busy = false;
@@ -334,7 +357,7 @@ class CallClient {
 
     // The turn is over for the watch once its audio is acknowledged: the press follows.
     private function sendPressIfDrained() as Void {
-        if (!_endPending || _captureOpen || _chunks.size() > 0 || _body != null || _lanes[AUDIO].busy) {
+        if (!_endPending || _captureOpen || _chunks.size() > 0 || _body != null || _resend.size() > 0 || _lanes[AUDIO].busy) {
             return;
         }
         _endPending = false;
@@ -346,15 +369,14 @@ class CallClient {
         queuePress();
         _turnSent = true;
         _turnSentAt = System.getTimer();
-        said = "";
         changed();
     }
 
     private function queuePress() as Void {
         _press += 1;
-        _commands.add({"action" => "press", "press" => _press} as Dictionary<String, Object>);
+        _commands.add({"action" => "press", "press" => _press, "turn" => _turn} as Dictionary<String, Object>);
         _holdUntil = System.getTimer() + PRESS_HOLD_MS;
-        Trace.add("press", {"press" => _press});
+        Trace.add("press", {"press" => _press, "turn" => _turn});
     }
 
     // The answer is cut: playback stops now, the press goes out, and the next turn is recorded.
@@ -470,7 +492,7 @@ class CallClient {
         if (_commands.size() > 0 && ready(CMD) && (_playedQueue.size() == 0 || System.getTimer() >= _holdUntil)) {
             sendCommand(call);
         }
-        if (_commands.size() == 0 && (_chunks.size() > 0 || _body != null) && ready(AUDIO)) {
+        if (_commands.size() == 0 && (_chunks.size() > 0 || _body != null || _resend.size() > 0) && ready(AUDIO)) {
             sendAudio(call);
         }
         if (_pieces.size() > 0 && !recording && _unplayed < UNPLAYED_MAX && ready(PIECE)) {
@@ -480,7 +502,7 @@ class CallClient {
             sendPlayed(call);
         }
         var now = System.getTimer();
-        if (Trace.lines.size() > 0 && ready(LOG) && (Trace.lines.size() >= LOG_BATCH || now - _lastLog >= LOG_EVERY_MS)) {
+        if (!_logHold && Trace.lines.size() > 0 && ready(LOG) && (Trace.lines.size() >= LOG_BATCH || now - _lastLog >= LOG_EVERY_MS)) {
             sendLog(call);
         }
     }
@@ -559,7 +581,10 @@ class CallClient {
     }
 
     private function sendAudio(call as String) as Void {
-        if (_body == null) {
+        if (_body == null && _resend.size() > 0) {
+            _body = _resend[0];
+            _resend = _resend.slice(1, null) as Array<ByteArray>;
+        } else if (_body == null) {
             var body = new [0]b;
             while (_chunks.size() > 0 && (body.size() == 0 || body.size() + _chunks[0].size() <= CHUNK_MAX)) {
                 var c = _chunks[0];
@@ -571,7 +596,7 @@ class CallClient {
         }
         var options = jsonOptions("audio/ogg");
         options[:body] = _body as Object;
-        go(AUDIO, Communications.HTTP_REQUEST_METHOD_POST, "/" + call + "/audio?turn=" + _turn + "&seq=" + _seq, null, options);
+        go(AUDIO, Communications.HTTP_REQUEST_METHOD_POST, "/" + call + "/audio?turn=" + _turn + "&seq=" + _seq + "&after_press=" + _afterPress, null, options);
     }
 
     private function sendPiece(call as String) as Void {
@@ -647,9 +672,21 @@ class CallClient {
             nextPiece();
         } else if (code == 404 && lane == HANG) {
             _hangId = null;
-        } else if (code == 404) {
-            Trace.add("call_gone", {"lane" => _lanes[lane].name, "code" => code});
+        } else if (code == 404 && lane == EVENTS) {
+            Trace.add("call_gone", {"code" => code});
             newCallAfterLoss();
+        } else if (code == 404) {
+            // an ended call answers its other routes with 404 while the events still say so
+            Trace.add("route_gone", {"lane" => _lanes[lane].name});
+            if (lane == LOG) {
+                _logHold = true;
+            } else if (lane == AUDIO) {
+                abandonTurn("Call ended");
+            } else {
+                drop(lane);
+            }
+        } else if (code == 422 && lane == AUDIO) {
+            abandonTurn("Lost audio, try again");
         } else if (code == 409 && lane == AUDIO) {
             conflict(data);
         } else if (CallLogic.retryable(code)) {
@@ -678,8 +715,9 @@ class CallClient {
             }
             _turnSentAt = System.getTimer();
         } else if (lane == AUDIO) {
-            _body = null;
+            keepSent();
             _seq += 1;
+            _conflicts = 0;
         } else if (lane == PIECE) {
             if (data instanceof ByteArray && _pieces.size() > 0) {
                 var piece = _pieces[0];
@@ -700,6 +738,22 @@ class CallClient {
             Trace.confirm(_logSent);
         } else if (lane == HANG) {
             _hangId = null;
+        }
+    }
+
+    // The acknowledged body stays available for a resend, within the buffer's bound.
+    private function keepSent() as Void {
+        var body = _body;
+        _body = null;
+        if (body == null) {
+            return;
+        }
+        _sentBodies.add(body);
+        _sentBytes += body.size();
+        while (_sentBytes > BUFFER_MAX && _sentBodies.size() > 0) {
+            _sentBytes -= _sentBodies[0].size();
+            _sentBodies = _sentBodies.slice(1, null) as Array<ByteArray>;
+            _sentBase += 1;
         }
     }
 
@@ -750,25 +804,50 @@ class CallClient {
     }
 
     private function conflict(data as Dictionary or String or ByteArray or Null) as Void {
-        var next = data instanceof Dictionary ? data["next_seq"] as Object? : null;
-        if (next instanceof Number) {
-            var verdict = CallLogic.afterConflict(_seq, next);
-            Trace.add("seq_conflict", {"sent" => _seq, "expected" => next, "verdict" => verdict});
-            if (verdict.equals("acked")) {
-                _body = null;
-                _seq = next;
-            } else {
-                // the server misses audio the watch no longer holds: the turn cannot be completed
-                recording = false;
-                _captureOpen = false;
-                _io.stopCapture.invoke();
-                discardTurn();
-                notice = "Lost audio, try again";
-                _turnSent = false;
-            }
-        } else {
-            failed(AUDIO, 409);
+        var field = data instanceof Dictionary ? data["next_seq"] as Object? : null;
+        // an error answer may reach the watch without its body: then everything still held goes again
+        // from the oldest chunk, which the server skips where it has it
+        var next = field instanceof Number ? field : _sentBase;
+        _conflicts += 1;
+        if (_conflicts > MAX_CONFLICTS) {
+            abandonTurn("Lost audio, try again");
+            return;
         }
+        var verdict = CallLogic.afterConflict(_seq, next, _sentBase);
+        Trace.add("seq_conflict", {"sent" => _seq, "expected" => next, "verdict" => verdict, "body" => field instanceof Number});
+        if (verdict.equals("acked")) {
+            keepSent();
+            _seq = next;
+        } else if (verdict.equals("rewind")) {
+            // the server misses chunks the watch still holds: they go again from the one it expects
+            _resend = _sentBodies.slice(next - _sentBase, null) as Array<ByteArray>;
+            var held = _body;
+            if (held != null) {
+                _resend.add(held);
+            }
+            _sentBodies = _sentBodies.slice(0, next - _sentBase) as Array<ByteArray>;
+            _sentBytes = 0;
+            for (var i = 0; i < _sentBodies.size(); i++) {
+                _sentBytes += _sentBodies[i].size();
+            }
+            _body = null;
+            _seq = next;
+        } else {
+            abandonTurn("Lost audio, try again");
+        }
+    }
+
+    // The turn cannot be completed: it is dropped without a press and the next one starts by itself.
+    private function abandonTurn(text as String) as Void {
+        Trace.add("turn_abandoned", {"turn" => _turn});
+        recording = false;
+        if (_captureOpen) {
+            _io.stopCapture.invoke();
+        }
+        _captureOpen = false;
+        discardTurn();
+        notice = text;
+        _turnSent = false;
     }
 
     // ----- events
@@ -809,9 +888,6 @@ class CallClient {
             if (state.equals("generating") || state.equals("speaking")) {
                 _turnSent = false;
             }
-            if (state.equals("generating")) {
-                said = "";
-            }
         } else if (piece instanceof Number) {
             var ms = e["ms"] as Object?;
             if (piece > _lastPiece) {
@@ -835,12 +911,6 @@ class CallClient {
             resetCall();
         } else if (e["heard"] instanceof String) {
             heard = e["heard"] as String;
-        } else if (e["said"] instanceof String) {
-            var s = e["said"] as String;
-            said = said.length() == 0 ? s : said + " " + s;
-            if (said.length() > 160) {
-                said = said.substring(said.length() - 160, null) as String;
-            }
         }
         _autoAt = _autoAt > System.getTimer() ? _autoAt : System.getTimer() + AUTO_RECORD_DELAY_MS;
     }
@@ -866,12 +936,13 @@ class CallClient {
         _sizes = {};
         _playedQueue = [];
         _commands = [];
+        _logHold = false;
         _press = 0;
+        _afterPress = 0;
         _turn = 0;
         _turnSent = false;
         engine = "";
         heard = "";
-        said = "";
         playbackActive = false;
         for (var i = 0; i < _lanes.size(); i++) {
             if (i != LOG && i != HANG) {

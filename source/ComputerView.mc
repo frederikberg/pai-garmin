@@ -1,3 +1,4 @@
+import Toybox.Attention;
 import Toybox.Graphics;
 import Toybox.Lang;
 import Toybox.System;
@@ -48,8 +49,11 @@ class ComputerView extends WatchUi.View {
         _client.hangUp();
     }
 
+    // A short buzz tells the press was taken; the server answers it a moment later.
     function press() as Void {
-        _client.press();
+        if (_client.press() && Attention has :vibrate) {
+            Attention.vibrate([new Attention.VibeProfile(70, 80)]);
+        }
     }
 
     function reconnect() as Void {
@@ -115,7 +119,6 @@ class ComputerView extends WatchUi.View {
         } else if (_client.engine.equals("speaking") || _client.playbackActive) {
             headline = "Speaking";
             color = Graphics.COLOR_GREEN;
-            body = _client.said;
             hint = "Start: interrupt";
         } else if (_client.engine.equals("generating")) {
             headline = "Thinking";
