@@ -84,7 +84,7 @@ Events carry their own index `i`, which the watch uses to skip what it saw. Each
 - `{"piece": n, "ref": r, "ms": d}`, a playable piece
 - `{"clear": true, "dropped": k}`, drop every unplayed piece and stop playback
 - `{"heard": "<text>"}`, once per turn before the state goes to `generating`, shown while the answer is being generated
-- `{"notice": {"code": "…", "text": "…"}}`, shown on screen
+- `{"notice": {"code": "…", "text": "…"}}`, its text shown briefly on screen. `heard_nothing` (a press had nothing to answer) changes nothing else: listening goes on. `turn_timed_out` (an open turn went without a press for too long, and the server dropped what it heard) makes the watch start a new turn with a new Ogg Opus stream, `seq` 0 and `after_press` at the current press count, without a press
 - `{"ended": "<reason>"}`, the call is over; Start opens a new one
 
 The pieces play through one streaming source as 16 kHz mono PCM behind a 44-byte WAV header the watch prepends to each stream.

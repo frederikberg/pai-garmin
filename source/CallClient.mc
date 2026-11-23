@@ -66,6 +66,7 @@ class CallClient {
     const MAX_CONFLICTS = 4;
     const AUTO_RECORD_DELAY_MS = 400;
     const TURN_SENT_MS = 6000;
+    const NOTICE_MS = 4000;
     const STOP_WAIT_MS = 1500;
     const LOG_BATCH = 20;
     const LOG_EVERY_MS = 2500;
@@ -99,6 +100,7 @@ class CallClient {
     var engine as String = "";
     var heard as String = "";
     var notice as String? = null;
+    private var _noticeUntil as Number = 0;
     var endedReason as String? = null;
     var recording as Boolean = false;
     var recordingSince as Number = 0;
@@ -136,6 +138,7 @@ class CallClient {
     private var _sentBase as Number = 0;
     private var _logHold as Boolean = false;
     private var _conflicts as Number = 0;
+    private var _restartTurn as Boolean = false;
     // bodies sent before, to go again with their own numbers
     private var _resend as Array<ByteArray> = [];
     private var _holdUntil as Number = 0;
@@ -211,13 +214,13 @@ class CallClient {
 
     // A chunk of the turn's Ogg Opus stream from the capture.
     function chunk(data as ByteArray) as Void {
-        if (!recording && !_captureOpen) {
+        if ((!recording && !_captureOpen) || _restartTurn) {
             return;
         }
         if (_chunkBytes + data.size() > BUFFER_MAX) {
             Trace.add("buffer_full", {"bytes" => _chunkBytes});
             if (recording) {
-                notice = "Link too slow";
+                setNotice("Link too slow");
                 endTurn();
             }
             return;
@@ -229,6 +232,10 @@ class CallClient {
     }
 
     function captureEnded() as Void {
+        if (_restartTurn) {
+            finishRestart();
+            return;
+        }
         if (_captureOpen) {
             _captureOpen = false;
             pump();
@@ -240,7 +247,7 @@ class CallClient {
         if (recording) {
             recording = false;
             _captureOpen = false;
-            notice = "Microphone error " + code;
+            setNotice("Microphone error " + code);
             discardTurn();
         }
         changed();
@@ -266,7 +273,7 @@ class CallClient {
 
     function playbackFailed(code as Number) as Void {
         Trace.add("playback_error", {"code" => code});
-        notice = "Playback error";
+        setNotice("Playback error");
         playbackActive = false;
         changed();
     }
@@ -310,7 +317,6 @@ class CallClient {
         _lanes[AUDIO].busy = false;
         recalcInflight();
         heard = "";
-        notice = null;
         if (_io.startCapture.invoke()) {
             recording = true;
             _captureOpen = true;
@@ -320,6 +326,7 @@ class CallClient {
             recording = false;
             _captureOpen = false;
             notice = "No Opus capture";
+            _noticeUntil = 0;
             Trace.add("capture_unavailable", null);
         }
         changed();
@@ -340,6 +347,7 @@ class CallClient {
         recording = false;
         _captureOpen = false;
         _endPending = false;
+        _restartTurn = false;
     }
 
     private function discardTurn() as Void {
@@ -363,7 +371,7 @@ class CallClient {
         _endPending = false;
         if (_turnBytes == 0) {
             Trace.add("empty_turn", null);
-            notice = "Heard nothing";
+            setNotice("Heard nothing");
             return;
         }
         queuePress();
@@ -419,6 +427,13 @@ class CallClient {
             }
             pump();
             return;
+        }
+        if (_restartTurn && now >= _stopAt) {
+            finishRestart();
+        }
+        if (notice != null && _noticeUntil > 0 && now >= _noticeUntil) {
+            notice = null;
+            changed();
         }
         if (_endPending && _captureOpen && now >= _stopAt) {
             Trace.add("capture_no_complete", null);
@@ -837,6 +852,33 @@ class CallClient {
         }
     }
 
+    // A short message on the screen.
+    private function setNotice(text as String) as Void {
+        notice = text;
+        _noticeUntil = System.getTimer() + NOTICE_MS;
+    }
+
+    // The server dropped the open turn (no press for too long): a new turn takes its place, with a
+    // new Opus stream, and the watch keeps recording. No press goes out for the old one.
+    private function restartTurn() as Void {
+        Trace.add("turn_restart", {"turn" => _turn});
+        if (!recording) {
+            return;
+        }
+        recording = false;
+        _restartTurn = true;
+        _stopAt = System.getTimer() + STOP_WAIT_MS;
+        _io.stopCapture.invoke();
+    }
+
+    private function finishRestart() as Void {
+        _restartTurn = false;
+        _captureOpen = false;
+        discardTurn();
+        // the next turn starts by itself a moment after the old capture has fully stopped
+        _autoAt = System.getTimer() + AUTO_RECORD_DELAY_MS;
+    }
+
     // The turn cannot be completed: it is dropped without a press and the next one starts by itself.
     private function abandonTurn(text as String) as Void {
         Trace.add("turn_abandoned", {"turn" => _turn});
@@ -846,7 +888,7 @@ class CallClient {
         }
         _captureOpen = false;
         discardTurn();
-        notice = text;
+        setNotice(text);
         _turnSent = false;
     }
 
@@ -902,8 +944,15 @@ class CallClient {
         } else if (e["notice"] instanceof Dictionary) {
             var n = e["notice"] as Dictionary<String, Object>;
             var text = n["text"] as Object?;
-            notice = text instanceof String ? text : "Notice";
-            Trace.add("notice", {"code" => n["code"]});
+            var code = n["code"] as Object?;
+            Trace.add("notice", {"code" => code});
+            setNotice(text instanceof String ? text : "Notice");
+            if ("heard_nothing".equals(code)) {
+                // the press had nothing to answer: listening goes on
+                _turnSent = false;
+            } else if ("turn_timed_out".equals(code)) {
+                restartTurn();
+            }
         } else if (e["ended"] != null) {
             var reason = e["ended"];
             endedReason = reason instanceof String ? reason : "ended";
@@ -920,7 +969,7 @@ class CallClient {
     // The server does not know the call any more: a new one takes its place.
     private function newCallAfterLoss() as Void {
         resetCall();
-        notice = "Reconnecting";
+        setNotice("Reconnecting");
     }
 
     private function resetCall() as Void {
@@ -936,6 +985,7 @@ class CallClient {
         _sizes = {};
         _playedQueue = [];
         _commands = [];
+        _restartTurn = false;
         _logHold = false;
         _press = 0;
         _afterPress = 0;
