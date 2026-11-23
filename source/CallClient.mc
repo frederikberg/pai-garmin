@@ -140,15 +140,15 @@ class CallClient {
     const LOG_URGENT_MS = 5000;
     const MEM_EVERY_MS = 15000;
     // a hang-up waits at most this long for the server to hear it
-    const HANG_GRACE_MS = 5000;
-    // the log gets this long after the hang-up request before the screen leaves
-    const HANG_LOG_MS = 1500;
+    const HANG_GRACE_MS = 2000;
     // the open is tried this often before the call is given up
     const OPEN_TRIES = 5;
     // the open waits for the first microphone data, but not longer than this
     const OPEN_WAIT_MS = 2500;
-    // the detailed trace's heartbeat
-    const HEARTBEAT_MS = 1000;
+    // audio goes out once this much is waiting, or when the turn is over: about a second of Opus a request
+    const AUDIO_MIN = 2048;
+    // the buzz for a sent turn comes this long after the press even if the capture has not said it stopped
+    const SENT_CUE_MS = 300;
     // a gap between clock ticks longer than this is traced
     const STALL_MS = 1500;
     // the length of a piece the server did not give one for
@@ -228,13 +228,21 @@ class CallClient {
     private var _pieceN as Number = 0;
     private var _gapMax as Number = 0;
     private var _starvedN as Number = 0;
-    private var _lastBeat as Number = 0;
+    // the turn's times for its summary: the press, then how long after it the capture stopped, the
+    // server had the press, the first piece was known, and the first sound played
+    private var _pressAt as Number = 0;
+    private var _stopMs as Number = -1;
+    private var _sentMs as Number = -1;
+    private var _pieceMs as Number = -1;
+    private var _fetchMs as Number = -1;
+    private var _soundMs as Number = -1;
+    private var _stored as Boolean = false;
+    private var _stopping as Boolean = false;
     private var _lastTick as Number = 0;
     private var _logToCall as Boolean = true;
     private var _orphanHold as Boolean = false;
     private var _dropping as Boolean = false;
     private var _cuedSent as Boolean = false;
-    private var _hangDoneAt as Number = 0;
     private var _closedSaid as Boolean = false;
     private var _logBatch as Number = 0;
     private var _failStreak as Number = 0;
@@ -416,14 +424,17 @@ class CallClient {
         }
         if (_captureOpen) {
             _captureOpen = false;
+            if (_endPending && _pressAt > 0) {
+                _stopMs = _env.now() - _pressAt;
+            }
             Trace.debug("capture_state", {"state" => "stopped"});
             cueSent();
             pump();
         }
     }
 
-    // The turn is over for the microphone: a short cue says the press was taken. It plays after the
-    // capture has stopped, so it is not in the turn.
+    // The turn is over for the microphone: a short cue says the press was taken, when the capture has
+    // stopped or a moment after the press, whichever comes first.
     private function cueSent() as Void {
         if (_endPending && !_cuedSent && _turnBytes > 0) {
             _cuedSent = true;
@@ -532,22 +543,43 @@ class CallClient {
         return _call != null;
     }
 
-    // One line for the turn that ended: how long the open took, how long the microphone took to deliver,
-    // the bytes sent and what the answer's pieces did.
+    // One line for the turn that ended: how long the microphone took to deliver, the bytes sent, how long
+    // after the press the capture stopped (stop_ms), the server had the press (sent_ms) and the first
+    // sound played (sound_ms), how long the first piece took to be known after that (piece_ms) and to
+    // arrive (fetch_ms), and what the answer's pieces did. -1 for a step that did not happen.
     private function summarize() as Void {
         if (_turn == 0) {
             return;
         }
-        Trace.add("turn_summary", {"turn" => _turn, "open_ms" => _turn == 1 ? _openMs : -1, "mic_ms" => _micMs,
-            "bytes" => _turnBytes, "pieces" => _pieceN, "gap_max_ms" => _gapMax, "starved" => _starvedN});
+        Trace.add("turn_summary", {"turn" => _turn, "mic_ms" => _micMs, "bytes" => _turnBytes, "stop_ms" => _stopMs,
+            "sent_ms" => _sentMs, "piece_ms" => _pieceMs, "fetch_ms" => _fetchMs, "sound_ms" => _soundMs,
+            "pieces" => _pieceN, "gap_max_ms" => _gapMax});
+        if (_starvedN > 0) {
+            Trace.add("starved", {"turn" => _turn, "n" => _starvedN});
+        }
         _pieceN = 0;
         _gapMax = 0;
         _starvedN = 0;
+        _pressAt = 0;
+        _stopMs = -1;
+        _sentMs = -1;
+        _pieceMs = -1;
+        _fetchMs = -1;
+        _soundMs = -1;
+        _stored = false;
     }
 
     // The player started a piece: the silence before it, and whether the piece before had to wait for it.
     function noteGap(gapMs as Number, starved as Boolean) as Void {
         _pieceN += 1;
+        if (_soundMs < 0 && _pressAt > 0) {
+            _soundMs = _env.now() - _pressAt;
+        }
+        if (!_stored) {
+            // once a turn, while the answer plays and the link has nothing urgent to carry
+            _stored = true;
+            Trace.persist();
+        }
         _gapMax = gapMs > _gapMax ? gapMs : _gapMax;
         if (starved) {
             _starvedN += 1;
@@ -606,14 +638,24 @@ class CallClient {
         recording = false;
         _cuedSent = false;
         _endPending = true;
-        _stopAt = _env.now() + STOP_WAIT_MS;
-        _io.stopCapture.invoke();
+        _pressAt = _env.now();
+        _stopAt = _pressAt + STOP_WAIT_MS;
+        stopMic();
+        pump();
         changed();
+    }
+
+    // Stops the microphone. It may hand over its last data and say it stopped before this returns;
+    // nothing is sent from inside that, so the request goes out from here, once.
+    private function stopMic() as Void {
+        _stopping = true;
+        _io.stopCapture.invoke();
+        _stopping = false;
     }
 
     private function stopCapture() as Void {
         if (recording || _captureOpen) {
-            _io.stopCapture.invoke();
+            stopMic();
         }
         recording = false;
         _captureOpen = false;
@@ -648,7 +690,6 @@ class CallClient {
         queuePress();
         _turnSent = true;
         _turnSentPoll = -1;
-        Trace.persist();
         changed();
     }
 
@@ -722,12 +763,10 @@ class CallClient {
             _fatalNotSet = false;
             startTurn();
         }
-        endPlaybackByTimer(now);
-        if (Trace.debugOn && now - _lastBeat >= HEARTBEAT_MS) {
-            // a gap in these lines is a stall of the watch's own loop
-            _lastBeat = now;
-            Trace.add("hb", {"rec" => recording, "mic" => micLive});
+        if (_endPending && now - _pressAt >= SENT_CUE_MS) {
+            cueSent();
         }
+        endPlaybackByTimer(now);
         if (now - _lastMem > MEM_EVERY_MS) {
             _lastMem = now;
             Trace.debug("mem", {"free" => System.getSystemStats().freeMemory, "chunks" => _chunkBytes, "unplayed" => _unplayed});
@@ -740,19 +779,14 @@ class CallClient {
         }
     }
 
-    // The hang-up is over when the server has heard it (and had a moment for the log), or when it has
-    // had its time: then the screen may leave and the clock stops.
+    // The hang-up is over when the server has heard it, or when it has had its time: then the screen
+    // may leave and the clock stops. What is left of the log stays for the app's exit to store.
     private function finishClosing(now as Number) as Void {
         if (_closedSaid) {
             return;
         }
         var heard = _hangId == null && !_lanes[HANG].busy && !_lanes[OPEN].busy;
-        if (heard && _hangDoneAt == 0) {
-            _hangDoneAt = now;
-        }
-        var logDone = Trace.lines.size() == 0 || _closeCall == null || _lanes[LOG].failures > 0
-            || (_hangDoneAt > 0 && now - _hangDoneAt >= HANG_LOG_MS);
-        if ((heard && logDone) || now - _closedAt > HANG_GRACE_MS) {
+        if (heard || now - _closedAt > HANG_GRACE_MS) {
             _closedSaid = true;
             Trace.active = false;
             _env.stopClock();
@@ -787,15 +821,14 @@ class CallClient {
     }
 
     function pump() as Void {
+        if (_stopping) {
+            return;
+        }
         sendPressIfDrained();
         var call = _call;
         if (_closing) {
-            // the hang-up first, then what is left of the log
-            var closed = _closeCall;
             if (_hangId != null && ready(HANG)) {
                 sendHang();
-            } else if (_hangId == null && closed != null && ready(LOG) && Trace.lines.size() > 0) {
-                sendLog(closed);
             }
             return;
         }
@@ -803,9 +836,10 @@ class CallClient {
             sendHang();
         }
         var now = _env.now();
-        // the log goes out when the link has nothing else to carry
-        var idle = !recording && !_endPending && _commands.size() == 0 && _chunks.size() == 0 && _body == null
-            && _resend.size() == 0 && _playedQueue.size() == 0 && _pieces.size() == 0;
+        // the log goes out when the link has nothing else to carry and no answer is being waited for:
+        // while the answer plays, or between calls
+        var idle = !turnOpen() && _playedQueue.size() == 0 && _pieces.size() == 0 && !_lanes[PIECE].busy
+            && !_turnSent && (playbackActive || !(engine.equals("generating") || engine.equals("speaking")));
         var logDue = !_logHold && Trace.lines.size() > 0 && ((idle && (Trace.lines.size() >= batchSize() || now - _lastLog >= LOG_EVERY_MS
             || (_logUrgent && now - _lastLog >= LOG_URGENT_MS))) || Trace.lines.size() >= Trace.MAX_LINES - 10);
         if (call == null) {
@@ -821,14 +855,15 @@ class CallClient {
         }
         // One request at a time, in this order: the press, the audio, the pieces, the played reports,
         // the log when it is due (which is rarely), the events. The events jump the queue when they
-        // have waited too long.
+        // have waited too long. While his turn is open nothing is expected from the server, so the
+        // events are only asked now and then, without a wait, and never hold up the audio.
         if (_commands.size() > 0 && ready(CMD) && (_playedQueue.size() == 0 || now >= _holdUntil)) {
             sendCommand(call);
         }
         if (now - _lastEventsAt >= EVENTS_MAX_GAP_MS && ready(EVENTS)) {
             sendEvents(call);
         }
-        if (_commands.size() == 0 && (_chunks.size() > 0 || _body != null || _resend.size() > 0) && ready(AUDIO)) {
+        if (_commands.size() == 0 && audioDue() && ready(AUDIO)) {
             sendAudio(call);
         }
         if (_pieces.size() > 0 && !recording && _unplayed < UNPLAYED_MAX && ready(PIECE)) {
@@ -840,9 +875,23 @@ class CallClient {
         if (logDue && ready(LOG)) {
             sendLog(call);
         }
-        if (ready(EVENTS)) {
+        if (!turnOpen() && ready(EVENTS)) {
             sendEvents(call);
         }
+    }
+
+    // His turn is on its way to the server: being recorded, or its audio or its press not yet taken.
+    private function turnOpen() as Boolean {
+        return recording || _captureOpen || _endPending || _commands.size() > 0 || _chunks.size() > 0 || _body != null
+            || _resend.size() > 0;
+    }
+
+    // Audio is sent in requests of about a second while he speaks, and at once when the turn is over.
+    private function audioDue() as Boolean {
+        if (_body != null || _resend.size() > 0) {
+            return true;
+        }
+        return _chunks.size() > 0 && (_chunkBytes >= AUDIO_MIN || !recording);
     }
 
     private function url(path as String) as String {
@@ -867,7 +916,6 @@ class CallClient {
         l.busy = true;
         l.sentAt = _env.now();
         l.token += 1;
-        Trace.debug("req_start", {"lane" => l.name});
         _inflight += 1;
         l.crowd = _inflight;
         options[:method] = verb;
@@ -915,7 +963,7 @@ class CallClient {
         _pollsSent += 1;
         _pollNo = _pollsSent;
         _lastEventsAt = _env.now();
-        var params = {"after" => _cursor, "wait" => POLL_WAIT_S} as Dictionary<Object, Object>;
+        var params = {"after" => _cursor, "wait" => turnOpen() ? 0 : POLL_WAIT_S} as Dictionary<Object, Object>;
         go(EVENTS, Communications.HTTP_REQUEST_METHOD_GET, "/" + call + "/events", params, jsonOptions(null));
     }
 
@@ -993,8 +1041,8 @@ class CallClient {
         _requests += 1;
         var bytes = data instanceof ByteArray ? data.size() : (lane == AUDIO && _body != null ? (_body as ByteArray).size() : 0);
         if (Trace.debugOn) {
-            // every request: start (in go) and end
-            Trace.add("req_end", {"lane" => l.name, "ms" => rtt, "code" => code, "bytes" => bytes});
+            // every request, when it is answered; it went out ms before
+            Trace.add("req", {"lane" => l.name, "ms" => rtt, "code" => code, "bytes" => bytes});
         } else if ((lane != EVENTS && rtt > SLOW_MS) || rtt > (POLL_WAIT_S + 6) * 1000) {
             Trace.add("rtt", {"lane" => l.name, "ms" => rtt, "bytes" => bytes, "code" => code});
         }
@@ -1005,6 +1053,11 @@ class CallClient {
             }
         } else {
             rejected(lane, code, data);
+        }
+        if (_closing) {
+            pump();
+            finishClosing(_env.now());
+            return;
         }
         autoRecord(_env.now());
         pump();
@@ -1095,6 +1148,7 @@ class CallClient {
             }
             if (_turnSent && _turnSentPoll < 0) {
                 _turnSentPoll = _pollsSent;
+                _sentMs = _env.now() - _pressAt;
             }
             _failStreak = 0;
         } else if (lane == AUDIO) {
@@ -1112,8 +1166,11 @@ class CallClient {
                 var ms = piece["ms"] as Number;
                 var length = ms > 0 ? ms : PIECE_MS_DEFAULT;
                 var started = _lanes[PIECE].sentAt;
-                Trace.debug("piece_fetch", {"n" => n, "bytes" => data.size(), "t0" => started, "ms" => _env.now() - started});
                 var now = _env.now();
+                Trace.debug("piece_fetch", {"n" => n, "bytes" => data.size(), "ms" => now - started});
+                if (_fetchMs < 0) {
+                    _fetchMs = now - started;
+                }
                 _playEnd = (_playEnd > now ? _playEnd : now) + length;
                 _fed.add([n, _playEnd]);
                 _io.play.invoke(n, length, data);
@@ -1270,7 +1327,7 @@ class CallClient {
         recording = false;
         _restartTurn = true;
         _stopAt = _env.now() + STOP_WAIT_MS;
-        _io.stopCapture.invoke();
+        stopMic();
     }
 
     private function finishRestart() as Void {
@@ -1286,13 +1343,12 @@ class CallClient {
         Trace.add("turn_abandoned", {"turn" => _turn, "cause" => cause});
         recording = false;
         if (_captureOpen) {
-            _io.stopCapture.invoke();
+            stopMic();
         }
         _captureOpen = false;
         discardTurn();
         setNotice(text);
         _turnSent = false;
-        Trace.persist();
         if (cause != null) {
             recordFailed(cause);
         }
@@ -1375,6 +1431,9 @@ class CallClient {
             if (piece > _lastPiece) {
                 _lastPiece = piece;
                 _pieces.add({"n" => piece, "ms" => ms instanceof Number ? ms : 0} as Dictionary<String, Number>);
+                if (_pieceMs < 0 && _sentMs >= 0) {
+                    _pieceMs = _env.now() - _pressAt - _sentMs;
+                }
                 Trace.debug("piece", {"n" => piece, "ms" => ms, "ref" => e["ref"]});
             }
         } else if (e["clear"] != null) {
