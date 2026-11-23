@@ -15,6 +15,11 @@
 // radar carry a radar picture link, which the stub does not serve: the watch's image requests go
 // through Garmin's image service, which cannot reach a local server.
 // Switch it on GET /__stub/weather?name=<weather scenario>.
+//
+// POST /api/watch/voice/turn answers every clip with a short beep WAV (16 kHz, or 8 kHz for
+// out=wav8; out=opus gets the 16 kHz WAV too, since the stub has no encoder) and logs the clip's
+// content type and size. VOICE_DELAY_MS delays the answer; switch it on
+// GET /__stub/voice-delay?ms=<ms>.
 const port = Number(process.env.PORT ?? 8099)
 const key = process.env.WATCH_KEY ?? 'stub-key'
 let scenario = process.env.SCENARIO ?? 'alarms'
@@ -25,6 +30,31 @@ type Alarm = { id: string; name: string; fire_at: string; created_at: string; so
 // GET /__stub/delay?ms=<ms>.
 let alarmDelayMs = Number(process.env.ALARM_DELAY_MS ?? 0)
 let weather = process.env.WEATHER ?? 'rain_soon'
+let voiceDelayMs = Number(process.env.VOICE_DELAY_MS ?? 0)
+
+// A mono 16-bit PCM WAV holding a 440 Hz tone of the given length.
+function beepWav(rate: number, seconds: number): Uint8Array {
+  const samples = Math.round(rate * seconds)
+  const out = new DataView(new ArrayBuffer(44 + samples * 2))
+  const text = (at: number, s: string) => [...s].forEach((c, i) => out.setUint8(at + i, c.charCodeAt(0)))
+  text(0, 'RIFF')
+  out.setUint32(4, 36 + samples * 2, true)
+  text(8, 'WAVEfmt ')
+  out.setUint32(16, 16, true)
+  out.setUint16(20, 1, true)
+  out.setUint16(22, 1, true)
+  out.setUint32(24, rate, true)
+  out.setUint32(28, rate * 2, true)
+  out.setUint16(32, 2, true)
+  out.setUint16(34, 16, true)
+  text(36, 'data')
+  out.setUint32(40, samples * 2, true)
+  for (let i = 0; i < samples; i++) {
+    const fade = Math.min(1, i / (rate * 0.02), (samples - i) / (rate * 0.02))
+    out.setInt16(44 + i * 2, Math.round(Math.sin((2 * Math.PI * 440 * i) / rate) * 12000 * fade), true)
+  }
+  return new Uint8Array(out.buffer)
+}
 
 type Half = Record<string, unknown>
 const iso = (minutes: number) => new Date(Date.now() + minutes * 60000).toISOString()
@@ -125,6 +155,10 @@ Bun.serve({
       alarmDelayMs = Number(url.searchParams.get('ms') ?? 0)
       return json({ alarmDelayMs })
     }
+    if (path === '/__stub/voice-delay') {
+      voiceDelayMs = Number(url.searchParams.get('ms') ?? 0)
+      return json({ voiceDelayMs })
+    }
     if (path === '/__stub/weather') {
       weather = url.searchParams.get('name') ?? 'rain_soon'
       return json({ weather })
@@ -133,6 +167,17 @@ Bun.serve({
     const auth = req.headers.get('authorization')
     if (scenario === 'rejected' || auth !== `Bearer ${key}`) return json({ detail: 'key_rejected' }, 401)
 
+    if (path === '/api/watch/voice/turn' && req.method === 'POST') {
+      const clip = new Uint8Array(await req.arrayBuffer())
+      const out = url.searchParams.get('out') ?? 'wav'
+      console.log(`  clip ${clip.length} B ${req.headers.get('content-type')}, out=${out}`)
+      if (clip.length === 0) return json({ detail: 'empty' }, 400)
+      if (!['wav', 'wav8', 'opus'].includes(out)) return json({ detail: 'unknown out' }, 422)
+      if (voiceDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, voiceDelayMs))
+      return new Response(beepWav(out === 'wav8' ? 8000 : 16000, 0.6), {
+        headers: { 'content-type': 'application/octet-stream' },
+      })
+    }
     if (path === '/api/watch/weather' && req.method === 'GET') {
       if (weather === 'key_rejected') return json({ detail: 'key_rejected' }, 401)
       if (weather === 'server_error') return json({ detail: 'unavailable' }, 503)

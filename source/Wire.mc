@@ -4,11 +4,14 @@ import Toybox.Lang;
 // The one place that talks to Communications.
 (:glance)
 module Wire {
+    // The header every watch route wants.
+    function authorization() as Dictionary<String, Object> {
+        return {"Authorization" => "Bearer " + ServerConfig.key()} as Dictionary<String, Object>;
+    }
+
     // Sends request to the configured server; the callback gets (responseCode, data).
     function send(request as Request, callback as Method(responseCode as Number, data as Dictionary or String or Null) as Void) as Void {
-        var headers = {
-            "Authorization" => "Bearer " + ServerConfig.key()
-        };
+        var headers = authorization();
         var body = {} as Dictionary<Object, Object>;
         var params = request.params;
         if (params != null) {

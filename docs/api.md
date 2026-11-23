@@ -12,6 +12,7 @@ Times are ISO 8601 in UTC with an offset, for example `2026-11-16T07:30:00+00:00
 | `DELETE /api/watch/alarm/{id}` | none | `200` with `{}` |
 | `POST /api/watch/alarm/dismiss` | none | `200` with `{}`, stops every ringing alarm |
 | `GET /api/watch/weather` | none | `200` with the weather below |
+| `POST /api/watch/voice/turn?out=<wav\|wav8\|opus>` | the recorded clip, raw | `200` with the reply audio; see Voice |
 
 State:
 
@@ -55,3 +56,9 @@ The watch shows the two halves as rows (`Now 70 % · 15:20` with a line such as 
 Changing a time is a `PUT` because Connect IQ cannot send `PATCH`.
 
 The app does not read the answer of `DELETE` and dismiss, only that one came. It also accepts an empty `204`, which the simulator reports as an error (`-400`); the app counts that code as "sent" for these two routes and reads the state again afterwards.
+
+## Voice
+
+The Computer screen records a clip, posts it and plays the answer. The body is the whole clip as raw bytes, `Content-Type: audio/ogg` for Ogg Opus (16 kHz mono, tried first) or `audio/wav` for 16-bit PCM WAV (16 kHz mono, when the watch cannot capture Opus). The `out` query parameter picks the reply format, `wav` when omitted: `wav` is WAV 16 kHz mono 16-bit, `wav8` the same at 8 kHz, `opus` Ogg Opus at 48 kHz. The answer is `200` with `Content-Type: application/octet-stream` and the audio as the body. Failures answer `400` for an empty body, `401` for a bad key, `413` for a clip over 2 MB, `502` when transcription or speech failed and `503` when the server is not set up for it.
+
+The clip is capped at ten seconds on the watch. The screen lists the capture format, bytes sent, response code, bytes received, round trip in milliseconds and free memory, so the numbers of a turn can be read off the watch.
