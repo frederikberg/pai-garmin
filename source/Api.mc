@@ -23,6 +23,7 @@ module Api {
     const ALARM = "/api/watch/alarm";
     const WEATHER = "/api/watch/weather";
     const VOICE_CALL = "/api/watch/voice/call";
+    const VOICE_TEST = "/api/watch/voice/test";
 
     function alarms() as Request {
         return new Request(Communications.HTTP_REQUEST_METHOD_GET, ALARM, null, true);
