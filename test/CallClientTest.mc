@@ -564,24 +564,28 @@ function whileHeSpeaksTheEventsAreAskedOnlyNowAndThenAndWithoutAWait(logger as L
 }
 
 (:test)
-function theSentCueComesSoonAfterThePressEvenIfTheCaptureNeverSaysItStopped(logger as Logger) as Boolean {
+function theSentCueNeverComesWhileTheMicrophoneIsOpen(logger as Logger) as Boolean {
     var env = new FakeEnv();
     var io = new FakeIo();
     var c = Kit.opened(env, io);
     c.chunk(Kit.silence(300));
     env.clock = 1000;
     c.press();
-    env.clock = 1100;
+    env.clock = 1500;
     c.tick();
     var notYet = io.cues.indexOf(CallLogic.CUE_SENT) < 0;
-    env.clock = 1400;
-    c.tick();
-    var sent = io.cues.indexOf(CallLogic.CUE_SENT) >= 0;
-    var n = io.cues.size();
     c.captureEnded();
-    env.clock = 1700;
-    c.tick();
-    return notYet && sent && io.cues.size() == n;
+    var atStop = io.cues.indexOf(CallLogic.CUE_SENT) >= 0;
+    // a capture that never says it stopped is given up on, and the cue comes then
+    var env2 = new FakeEnv();
+    var io2 = new FakeIo();
+    var c2 = Kit.opened(env2, io2);
+    c2.chunk(Kit.silence(300));
+    env2.clock = 1000;
+    c2.press();
+    env2.clock = 2600;
+    c2.tick();
+    return notYet && atStop && io2.cues.indexOf(CallLogic.CUE_SENT) >= 0;
 }
 
 (:test)
@@ -919,4 +923,76 @@ function afterThePressTheAudioWaitsAMomentForTheMicrophonesLastData(logger as Lo
     env2.clock = 1500;
     c2.tick();
     return held && whole && env2.onlyOpen().find("/audio") != null;
+}
+
+(:test)
+function whenAWaitingSessionHasSpokenTheSpeakSignalSaysStartIsHisMove(logger as Logger) as Boolean {
+    var env = new FakeEnv();
+    var io = new FakeIo();
+    var c = Kit.opened(env, io);
+    Kit.turnSent(env, c);
+    env.reply("/events", 200, {"cursor" => 3, "events" => [{"i" => 1, "state" => "generating"}, {"i" => 2, "state" => "wake", "owner" => "session", "session" => "Notes"}, {"i" => 3, "piece" => 0, "ms" => 1500}]});
+    env.reply("/piece/0", 200, Kit.silence(4000));
+    var before = io.cues.size();
+    c.piecePlayed(0);
+    c.playbackIdle();
+    c.answerEnded();
+    var buzzed = io.cues.size() == before + 1 && io.cues[before] == CallLogic.CUE_YOUR_TURN && !c.recording;
+    // with Computer the end of an answer starts the microphone, whose own signal follows
+    var env2 = new FakeEnv();
+    var io2 = new FakeIo();
+    var c2 = Kit.opened(env2, io2);
+    Kit.turnSent(env2, c2);
+    env2.reply("/events", 200, {"cursor" => 3, "events" => [{"i" => 1, "state" => "generating"}, {"i" => 2, "piece" => 0, "ms" => 1500}, {"i" => 3, "state" => "listening"}]});
+    env2.reply("/piece/0", 200, Kit.silence(4000));
+    var before2 = io2.cues.size();
+    c2.piecePlayed(0);
+    c2.playbackIdle();
+    c2.answerEnded();
+    return buzzed && io2.cues.size() == before2 && c2.recording;
+}
+
+(:test)
+function triesOfAPieceAskedForAheadDoNotCountAgainstAnAnnouncedOne(logger as Logger) as Boolean {
+    var env = new FakeEnv();
+    var io = new FakeIo();
+    var c = Kit.openedWith(env, io, ["piece_wait"]);
+    Kit.turnSent(env, c);
+    env.reply("/events", 200, {"cursor" => 1, "events" => [{"i" => 1, "state" => "generating"}]});
+    // the piece asked for ahead fails five times, with the events asked in between
+    for (var k = 1; k <= 5; k++) {
+        if (!env.reply("/piece/0", 503, null)) {
+            return false;
+        }
+        env.clock += 9000;
+        c.tick();
+        env.reply("/events", 200, {"cursor" => 1, "events" => []});
+    }
+    // then it is announced, and its first fetch fails once: it is tried again, not dropped
+    env.replyOnly(204, null);
+    env.reply("/events", 200, {"cursor" => 2, "events" => [{"i" => 2, "piece" => 0, "ms" => 1500}]});
+    env.reply("/piece/0", 503, null);
+    env.clock += 9000;
+    c.tick();
+    env.reply("/events", 200, {"cursor" => 2, "events" => []});
+    env.clock += 9000;
+    c.tick();
+    return env.reply("/piece/0", 200, Kit.silence(4000)) && io.played.size() == 1;
+}
+
+(:test)
+function aNewCallStartsWithoutAnAnswerBehindIt(logger as Logger) as Boolean {
+    var env = new FakeEnv();
+    var io = new FakeIo();
+    var c = Kit.opened(env, io);
+    c.noteGap(0, false);
+    c.reconnect();
+    c.chunk(Kit.silence(300));
+    c.tick();
+    env.reply("/c1", 200, {});
+    env.reply("voice/call", 201, {"call" => "c2"});
+    env.clock = 6000;
+    c.tick();
+    env.reply("/events", 200, {"cursor" => 1, "events" => [{"i" => 1, "notice" => {"code" => "no_speech", "text" => "Nothing heard."}}]});
+    return !c.closed() && c.recording;
 }
