@@ -10,11 +10,13 @@ class PaiApp extends Application.AppBase {
         AppBase.initialize();
     }
 
-    // The last lines of this run are kept for the next launch.
+    // The lines this run did not get to send are kept for the next launch.
     (:typecheck(disableGlanceCheck))
     function onStop(state as Dictionary?) as Void {
         if (Trace.lines.size() > 0) {
             Trace.persist();
+        } else {
+            Trace.clearStored();
         }
     }
 

@@ -82,6 +82,17 @@ class FakeEnv extends CallEnv {
         return count == 1 ? url : "";
     }
 
+    // How many requests are in flight.
+    function inFlight() as Number {
+        var count = 0;
+        for (var i = 0; i < requests.size(); i++) {
+            if (requests[i][:open] as Boolean) {
+                count += 1;
+            }
+        }
+        return count;
+    }
+
     // Answers the request in flight.
     function replyOnly(code as Number, data as Object?) as Void {
         for (var i = 0; i < requests.size(); i++) {
@@ -175,6 +186,7 @@ class FakeIo {
     var cues as Array<Number> = [];
     var closedCalls as Number = 0;
     var busyNow as Boolean = false;
+    var flushOnStop as ByteArray? = null;
 
     function io() as CallIo {
         return new CallIo(method(:startCapture), method(:stopCapture), method(:play), method(:stopPlayback), method(:changed),
@@ -201,7 +213,16 @@ class FakeIo {
         return startResult;
     }
 
+    // a microphone that hands over its last data, in two windows, and says it stopped before stop returns
     function stopCapture() as Void {
+        var c = client;
+        var tail = flushOnStop;
+        if (c != null && tail != null) {
+            flushOnStop = null;
+            c.chunk(tail.slice(0, tail.size() / 2));
+            c.chunk(tail.slice(tail.size() / 2, null));
+            c.captureEnded();
+        }
     }
 
     function play(n as Number, ms as Number, pcm as ByteArray) as Void {
@@ -390,37 +411,55 @@ function listeningBeginsBeforeTheCallExistsAndItsAudioFollows(logger as Logger) 
     c.start();
     // recording began at once, with no request answered
     var listening = c.recording && io.captures == 1 && !env.asked("/events");
-    c.chunk(Kit.silence(100));
+    c.chunk(Kit.silence(2100));
     c.tick();
     env.reply("voice/call", 201, {"call" => "c1"});
     var first = env.onlyOpen().find("/audio?turn=1&seq=0") != null;
     var firstBody = env.bodyOf("/audio");
     c.chunk(Kit.silence(50));
     env.replyOnly(200, {});
+    // a little audio waits for more while he speaks, and goes when the turn is over
+    var waits = env.inFlight() == 0;
+    c.press();
+    c.captureEnded();
     var second = env.onlyOpen().find("seq=1") != null;
     var secondBody = env.bodyOf("/audio");
-    return listening && first && firstBody != null && firstBody.size() == 100 && second && secondBody != null && secondBody.size() == 50;
+    return listening && first && firstBody != null && firstBody.size() == 2100 && waits && second && secondBody != null && secondBody.size() == 50;
 }
 
 (:test)
-function aHangUpIsHeardByTheServerBeforeTheScreenLeaves(logger as Logger) as Boolean {
+function aHangUpIsHeardByTheServerAndThenTheScreenLeavesAtOnce(logger as Logger) as Boolean {
     var env = new FakeEnv();
     var io = new FakeIo();
     var c = Kit.opened(env, io);
-    env.settle();
-    env.clock = 1000;
+    env.clock = 6000;
+    c.tick();
+    var polling = env.onlyOpen().find("/events") != null;
+    Trace.add("x", null);
     c.hangUp();
     // the events request that was in flight is forgotten; the hang-up is the only one now
     env.reply("/events", 200, {});
     var open = env.onlyOpen();
     var hangUp = open.length() > 0 && env.indexEnding("/c1") >= 0 && open.find("/events") == null;
+    var waiting = io.closedCalls == 0;
     env.replyOnly(200, {});
-    env.clock = 1100;
+    // nothing else is waited for: the log's rest is kept for the exit
+    return polling && hangUp && waiting && io.closedCalls == 1 && env.inFlight() == 0 && !env.asked("/log");
+}
+
+(:test)
+function aHangUpNobodyAnswersLeavesAfterAShortWait(logger as Logger) as Boolean {
+    var env = new FakeEnv();
+    var io = new FakeIo();
+    var c = Kit.opened(env, io);
+    env.clock = 1000;
+    c.hangUp();
+    env.clock = 2500;
     c.tick();
-    env.settle();
-    env.clock = 1200;
+    var waiting = io.closedCalls == 0;
+    env.clock = 3100;
     c.tick();
-    return hangUp && io.closedCalls == 1 && env.indexOf("/log") > env.indexEnding("/c1");
+    return waiting && io.closedCalls == 1;
 }
 
 (:test)
@@ -428,8 +467,7 @@ function requestsGoOneAtATimeInPriorityOrder(logger as Logger) as Boolean {
     var env = new FakeEnv();
     var io = new FakeIo();
     var c = Kit.opened(env, io);
-    env.settle();
-    // a turn that is sent, with the log full and events due, while one request is in flight
+    // a turn that is sent, with the log full, while one request is in flight
     c.chunk(Kit.silence(300));
     c.press();
     c.captureEnded();
@@ -437,9 +475,7 @@ function requestsGoOneAtATimeInPriorityOrder(logger as Logger) as Boolean {
         Trace.add("x", null);
     }
     var order = [] as Array<String>;
-    var shortWait = env.eventsWait() == 1;
     for (var step = 0; step < 4; step++) {
-        env.replyOnly(200, {"cursor" => 0, "events" => []});
         var url = env.onlyOpen();
         if (url.find("/audio") != null) {
             order.add("audio");
@@ -452,8 +488,50 @@ function requestsGoOneAtATimeInPriorityOrder(logger as Logger) as Boolean {
         } else {
             order.add("?" + url);
         }
+        env.replyOnly(200, {"cursor" => 0, "events" => []});
     }
-    return shortWait && order[0].equals("audio") && order[1].equals("command") && order[2].equals("log") && order[3].equals("events");
+    // the answer is waited for with the events, and the log stays behind them
+    return order[0].equals("audio") && order[1].equals("command") && order[2].equals("events") && order[3].equals("events")
+        && env.eventsWait() == 1;
+}
+
+(:test)
+function whileHeSpeaksTheEventsAreAskedOnlyNowAndThenAndWithoutAWait(logger as Logger) as Boolean {
+    var env = new FakeEnv();
+    var io = new FakeIo();
+    var c = Kit.opened(env, io);
+    var quiet = true;
+    for (var t = 250; t <= 4750; t += 250) {
+        env.clock = t;
+        c.tick();
+        quiet = quiet && env.inFlight() == 0;
+    }
+    env.clock = 5250;
+    c.tick();
+    var asked = env.onlyOpen().find("/events") != null && env.eventsWait() == 0;
+    env.replyOnly(200, {"cursor" => 0, "events" => []});
+    return c.recording && quiet && asked && env.inFlight() == 0;
+}
+
+(:test)
+function theSentCueComesSoonAfterThePressEvenIfTheCaptureNeverSaysItStopped(logger as Logger) as Boolean {
+    var env = new FakeEnv();
+    var io = new FakeIo();
+    var c = Kit.opened(env, io);
+    c.chunk(Kit.silence(300));
+    env.clock = 1000;
+    c.press();
+    env.clock = 1100;
+    c.tick();
+    var notYet = io.cues.indexOf(CallLogic.CUE_SENT) < 0;
+    env.clock = 1400;
+    c.tick();
+    var sent = io.cues.indexOf(CallLogic.CUE_SENT) >= 0;
+    var n = io.cues.size();
+    c.captureEnded();
+    env.clock = 1700;
+    c.tick();
+    return notYet && sent && io.cues.size() == n;
 }
 
 (:test)
@@ -519,23 +597,23 @@ function afterABufferOverflowTheRestOfTheTurnIsDropped(logger as Logger) as Bool
 }
 
 (:test)
-function theLogWaitsForTheLinkToBeIdle(logger as Logger) as Boolean {
+function theLogGoesWhileTheAnswerPlays(logger as Logger) as Boolean {
     var env = new FakeEnv();
     var io = new FakeIo();
     var c = Kit.opened(env, io);
-    env.settle();
     for (var i = 0; i < 25; i++) {
         Trace.add("x", null);
     }
-    // the microphone is recording: audio and events have the link, the log waits
-    env.replyOnly(200, {"cursor" => 0, "events" => []});
-    env.replyOnly(200, {"cursor" => 0, "events" => []});
-    var waited = !env.asked("/log");
     c.chunk(Kit.silence(200));
     c.press();
     c.captureEnded();
-    env.settle();
-    return waited && env.asked("/log");
+    env.settleUntilEvents();
+    env.reply("/events", 200, {"cursor" => 2, "events" => [{"i" => 1, "state" => "generating"}, {"i" => 2, "state" => "speaking"}]});
+    env.reply("/events", 200, {"cursor" => 3, "events" => [{"i" => 3, "piece" => 0, "ms" => 3000}]});
+    // his turn, the wait for the answer and the piece on its way all had the link to themselves
+    var waited = !env.asked("/log") && env.onlyOpen().find("/piece/0") != null;
+    env.replyOnly(200, Kit.silence(3000));
+    return waited && io.played.size() == 1 && env.onlyOpen().find("/log") != null;
 }
 
 (:test)
@@ -573,4 +651,19 @@ function aStallOfTheClockIsTraced(logger as Logger) as Boolean {
     c.tick();
     var last = Trace.lines.size() > 0 ? Trace.lines[Trace.lines.size() - 1] : null;
     return quiet && last != null && (last["ev"] as String).equals("stall") && (last["gap_ms"] as Number) == 3750;
+}
+
+(:test)
+function aMicrophoneThatFlushesInsideItsStopSendsTheRestInOneRequest(logger as Logger) as Boolean {
+    var env = new FakeEnv();
+    var io = new FakeIo();
+    var c = Kit.opened(env, io);
+    c.chunk(Kit.silence(300));
+    io.flushOnStop = Kit.silence(120);
+    c.press();
+    // nothing went out from inside the stop: one request carries what was waiting and the tail
+    var body = env.bodyOf("/audio");
+    var whole = env.inFlight() == 1 && body != null && body.size() == 430;
+    env.replyOnly(200, {});
+    return whole && env.onlyOpen().find("/command") != null;
 }

@@ -73,7 +73,7 @@ module Trace {
                 line[keys[i] as String] = fields[keys[i]] as Object;
             }
         }
-        System.println("call: " + line);
+        echo(line);
         lines.add(line);
         if (lines.size() > MAX_LINES) {
             var head = lines.slice(0, KEEP_FIRST) as Array<Dictionary<String, Object>>;
@@ -82,6 +82,16 @@ module Trace {
             lines.addAll(tail);
             dropped += 1;
         }
+    }
+
+    // A debug build prints every line; a release build spends nothing on it.
+    (:debug)
+    function echo(line as Dictionary<String, Object>) as Void {
+        System.println("call: " + line);
+    }
+
+    (:release)
+    function echo(line as Dictionary<String, Object>) as Void {
     }
 
     // A line of the detailed trace: only while the debug setting is on.
