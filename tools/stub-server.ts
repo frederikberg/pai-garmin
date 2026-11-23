@@ -100,13 +100,26 @@ function weatherAnswer(name: string) {
 // ---- the Computer call
 
 const RATE = 16000
-// raw s16le mono PCM of a sine tone with short fades
-function tonePcm(freq: number, seconds: number): Uint8Array {
+// A complete WAV file (16 kHz mono 16-bit, exact sizes) holding a sine tone with short fades
+function toneWav(freq: number, seconds: number): Uint8Array {
   const samples = Math.round(RATE * seconds)
-  const out = new DataView(new ArrayBuffer(samples * 2))
+  const out = new DataView(new ArrayBuffer(44 + samples * 2))
+  const text = (at: number, s: string) => [...s].forEach((c, i) => out.setUint8(at + i, c.charCodeAt(0)))
+  text(0, 'RIFF')
+  out.setUint32(4, 36 + samples * 2, true)
+  text(8, 'WAVEfmt ')
+  out.setUint32(16, 16, true)
+  out.setUint16(20, 1, true)
+  out.setUint16(22, 1, true)
+  out.setUint32(24, RATE, true)
+  out.setUint32(28, RATE * 2, true)
+  out.setUint16(32, 2, true)
+  out.setUint16(34, 16, true)
+  text(36, 'data')
+  out.setUint32(40, samples * 2, true)
   for (let i = 0; i < samples; i++) {
     const fade = Math.min(1, i / (RATE * 0.02), (samples - i) / (RATE * 0.02))
-    out.setInt16(i * 2, Math.round(Math.sin((2 * Math.PI * freq * i) / RATE) * 9000 * fade), true)
+    out.setInt16(44 + i * 2, Math.round(Math.sin((2 * Math.PI * freq * i) / RATE) * 9000 * fade), true)
   }
   return new Uint8Array(out.buffer)
 }
@@ -148,7 +161,7 @@ function setState(call: Call, state: string) {
 }
 function addPiece(call: Call, freq: number, seconds: number) {
   const n = call.nextPiece++
-  call.pieces.set(n, tonePcm(freq, seconds))
+  call.pieces.set(n, toneWav(freq, seconds))
   emit(call, { piece: n, ref: `r${n}`, ms: Math.round(seconds * 1000) })
 }
 function later(call: Call, ms: number, fn: () => void) {
@@ -171,7 +184,7 @@ function openCall(): Call {
   }
   calls.set(call.id, call)
   setState(call, 'ready')
-  addPiece(call, 440, 0.4)
+  addPiece(call, 440, 1.1)
   setState(call, 'listening')
   return call
 }

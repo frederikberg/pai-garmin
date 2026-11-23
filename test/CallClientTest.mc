@@ -36,7 +36,7 @@ class FakeEnv extends CallEnv {
 
     (:typecheck(false))
     function request(url as String, params as Object?, options as Dictionary, callback as Method) as Void {
-        requests.add({:url => url, :callback => callback, :open => true});
+        requests.add({:url => url, :params => params, :callback => callback, :open => true});
     }
 
     function asked(part as String) as Boolean {
@@ -61,13 +61,56 @@ class FakeEnv extends CallEnv {
         return false;
     }
 
-    // Answers what the answer's content does not matter for, until nothing of the kind is open.
+    // The address of the one request in flight; an empty string when there is none or several.
+    function onlyOpen() as String {
+        var url = "";
+        var count = 0;
+        for (var i = 0; i < requests.size(); i++) {
+            if (requests[i][:open] as Boolean) {
+                count += 1;
+                url = requests[i][:url] as String;
+            }
+        }
+        return count == 1 ? url : "";
+    }
+
+    // Answers the request in flight.
+    function replyOnly(code as Number, data as Object?) as Void {
+        for (var i = 0; i < requests.size(); i++) {
+            var r = requests[i];
+            if (r[:open] as Boolean) {
+                r[:open] = false;
+                (r[:callback] as Method).invoke(code, data);
+                return;
+            }
+        }
+    }
+
+    // The wait asked of the oldest open events request.
+    function eventsWait() as Number {
+        for (var i = 0; i < requests.size(); i++) {
+            var r = requests[i];
+            if ((r[:open] as Boolean) && (r[:url] as String).find("/events") != null) {
+                var params = r[:params] as Dictionary;
+                return params["wait"] as Number;
+            }
+        }
+        return -1;
+    }
+
+    // Answers the request in flight, again and again, with what its content does not matter for: events
+    // with nothing new, the rest with an empty answer. Stops at a piece, which the test answers itself.
     function settle() as Void {
-        var again = true;
-        var rounds = 0;
-        while (again && rounds < 30) {
-            rounds += 1;
-            again = reply("/command", 200, {}) || reply("/audio", 200, {}) || reply("/played", 200, {}) || reply("/log", 200, {});
+        for (var round = 0; round < 60; round++) {
+            var url = onlyOpen();
+            if (url.length() == 0 || url.find("/piece/") != null) {
+                return;
+            }
+            if (url.find("/events") != null) {
+                reply("/events", 200, {"cursor" => 0, "events" => []});
+            } else {
+                replyOnly(200, {});
+            }
         }
     }
 }
@@ -151,9 +194,9 @@ function aCutLeavesRoomForTheNextAnswer(logger as Logger) as Boolean {
     c.chunk(Kit.silence(200));
     c.press();
     c.captureEnded();
-    env.settle();
-    // the next answer's piece must be fetched
+    // the events request in flight brings the next answer's piece
     env.reply("/events", 200, {"cursor" => 8, "events" => [{"i" => 7, "state" => "generating"}, {"i" => 8, "piece" => 5, "ms" => 1000}]});
+    env.settle();
     return heldBack && env.asked("/piece/5") && io.played.size() == 3;
 }
 
@@ -192,4 +235,59 @@ function aFailedMicrophoneStartIsTriedAgainWithStart(logger as Logger) as Boolea
     io.startResult = 0;
     var pressed = c.press();
     return failed && pressed && c.recording && io.captures == 1;
+}
+
+(:test)
+function recordingBeginsEvenWhenThePlayerNeverSaysItStopped(logger as Logger) as Boolean {
+    var env = new FakeEnv();
+    var io = new FakeIo();
+    var c = Kit.opened(env, io);
+    env.reply("/events", 200, {"cursor" => 2, "events" => [{"i" => 1, "state" => "listening"}, {"i" => 2, "piece" => 0, "ms" => 1133}]});
+    env.reply("/piece/0", 200, Kit.silence(36322));
+    var played = io.played.size() == 1;
+    env.clock = 1000;
+    c.tick();
+    var waiting = io.captures == 0;
+    // the piece is over by the clock, then the pause before listening
+    env.clock = 2000;
+    c.tick();
+    env.clock = 2500;
+    c.tick();
+    env.settle();
+    return played && waiting && io.captures == 1 && env.asked("/played");
+}
+
+(:test)
+function requestsGoOneAtATimeInPriorityOrder(logger as Logger) as Boolean {
+    var env = new FakeEnv();
+    var io = new FakeIo();
+    var c = Kit.opened(env, io);
+    env.reply("/events", 200, {"cursor" => 1, "events" => [{"i" => 1, "state" => "listening"}]});
+    env.clock = 500;
+    c.tick();
+    // a turn that is sent, with the log full and events due, while one request is in flight
+    c.chunk(Kit.silence(300));
+    c.press();
+    c.captureEnded();
+    for (var i = 0; i < 25; i++) {
+        Trace.add("x", null);
+    }
+    var order = [] as Array<String>;
+    var shortWait = env.eventsWait() == 1;
+    for (var step = 0; step < 4; step++) {
+        env.replyOnly(200, {"cursor" => 0, "events" => []});
+        var url = env.onlyOpen();
+        if (url.find("/audio") != null) {
+            order.add("audio");
+        } else if (url.find("/command") != null) {
+            order.add("command");
+        } else if (url.find("/log") != null) {
+            order.add("log");
+        } else if (url.find("/events") != null) {
+            order.add("events");
+        } else {
+            order.add("?" + url);
+        }
+    }
+    return shortWait && order[0].equals("audio") && order[1].equals("command") && order[2].equals("log") && order[3].equals("events");
 }
