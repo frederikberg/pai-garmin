@@ -5,7 +5,7 @@ import Toybox.Lang;
 // the request's address and the wording of a failure.
 module Voice {
     // The reply formats of the `out` query parameter; the first is the server's default.
-    const OUTS = ["wav", "wav8", "opus"];
+    const OUTS = ["wav", "wav8"];
 
     // The format after out in the cycle the Up hold walks.
     function nextOut(out as String) as String {

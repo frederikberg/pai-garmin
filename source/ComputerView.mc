@@ -309,12 +309,8 @@ class ComputerView extends WatchUi.View {
         WatchUi.requestUpdate();
     }
 
-    // The format the server's answer to the chosen `out` is in; the Opus answer is left for the
-    // player to detect.
+    // The format the server's answer to the chosen `out` is in.
     private function replyFormat() as Audio.AudioFormat {
-        if (_out.equals("opus")) {
-            return null as Audio.AudioFormat;
-        }
         return {
             :containerFormat => Audio.CONTAINER_WAV,
             :codec => Audio.CODEC_LPCM,

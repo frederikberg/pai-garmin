@@ -17,7 +17,7 @@
 // Switch it on GET /__stub/weather?name=<weather scenario>.
 //
 // POST /api/watch/voice/turn answers every clip with a short beep WAV (16 kHz, or 8 kHz for
-// out=wav8; out=opus gets the 16 kHz WAV too, since the stub has no encoder) and logs the clip's
+// out=wav8) and logs the clip's
 // content type and size. VOICE_DELAY_MS delays the answer; switch it on
 // GET /__stub/voice-delay?ms=<ms>.
 const port = Number(process.env.PORT ?? 8099)
@@ -172,7 +172,7 @@ Bun.serve({
       const out = url.searchParams.get('out') ?? 'wav'
       console.log(`  clip ${clip.length} B ${req.headers.get('content-type')}, out=${out}`)
       if (clip.length === 0) return json({ detail: 'empty' }, 400)
-      if (!['wav', 'wav8', 'opus'].includes(out)) return json({ detail: 'unknown out' }, 422)
+      if (!['wav', 'wav8'].includes(out)) return json({ detail: 'unknown out' }, 422)
       if (voiceDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, voiceDelayMs))
       return new Response(beepWav(out === 'wav8' ? 8000 : 16000, 0.6), {
         headers: { 'content-type': 'application/octet-stream' },
