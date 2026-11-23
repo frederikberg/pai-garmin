@@ -122,6 +122,17 @@ class FakeEnv extends CallEnv {
         return -1;
     }
 
+    // The parameters (or JSON body) of the oldest open request whose address contains part.
+    function paramsOf(part as String) as Dictionary? {
+        for (var i = 0; i < requests.size(); i++) {
+            var r = requests[i];
+            if ((r[:open] as Boolean) && (r[:url] as String).find(part) != null) {
+                return r[:params] as Dictionary?;
+            }
+        }
+        return null;
+    }
+
     // The body of the oldest open request whose address contains part.
     function bodyOf(part as String) as ByteArray? {
         for (var i = 0; i < requests.size(); i++) {
@@ -249,6 +260,11 @@ class FakeIo {
 (:test)
 module Kit {
 function opened(env as FakeEnv, io as FakeIo) as CallClient {
+    return openedWith(env, io, null);
+}
+
+// A call on a server that offers the named features; null for one that offers none.
+function openedWith(env as FakeEnv, io as FakeIo, features as Array<String>?) as CallClient {
     Trace.lines = [];
     Trace.dropped = 0;
     Trace.reported = 0;
@@ -259,8 +275,16 @@ function opened(env as FakeEnv, io as FakeIo) as CallClient {
     // the microphone delivers, which lets the open go out
     c.chunk(silence(10));
     c.tick();
-    env.reply("voice/call", 201, {"call" => "c1"});
+    env.reply("voice/call", 201, features == null ? {"call" => "c1"} : {"call" => "c1", "features" => features});
     return c;
+}
+
+// One turn spoken and sent, up to the events request that waits for the answer.
+function turnSent(env as FakeEnv, c as CallClient) as Void {
+    c.chunk(silence(300));
+    c.press();
+    c.captureEnded();
+    env.settleUntilEvents();
 }
 
 function silence(n as Number) as ByteArray {
@@ -711,4 +735,160 @@ function theScreenChangesWithTheCallAndNotWithEveryAnswer(logger as Logger) as B
         && thinking.headline.equals("Thinking") && thinking.body.equals("add milk") && same
         && speaking.headline.equals("Speaking") && !speaking.key().equals(thinking.key())
         && !speak.key().equals(thinking.key());
+}
+
+(:test)
+function thePressRidesOnTheLastAudioWhereTheServerOffersIt(logger as Logger) as Boolean {
+    var env = new FakeEnv();
+    var io = new FakeIo();
+    var c = Kit.openedWith(env, io, ["end_on_audio"]);
+    c.chunk(Kit.silence(2500));
+    var early = env.onlyOpen().find("/audio") != null && env.onlyOpen().find("end=") == null;
+    c.chunk(Kit.silence(300));
+    env.replyOnly(200, {});
+    c.press();
+    c.captureEnded();
+    var last = env.onlyOpen();
+    var rides = last.find("/audio") != null && last.find("&end=1") != null;
+    // the request fails once: it goes again with the same press
+    env.replyOnly(503, null);
+    env.clock = 600;
+    c.tick();
+    var again = env.onlyOpen().find("&end=1") != null;
+    var sending = c.sending();
+    env.replyOnly(200, {});
+    // no command follows: the answer is waited for at once
+    return early && rides && again && sending && !env.asked("/command") && env.onlyOpen().find("/events") != null
+        && env.eventsWait() == 1 && CallScreen.face(c).headline.equals("Sending");
+}
+
+(:test)
+function playedReportsRideOnTheNextRequestWhereTheServerOffersIt(logger as Logger) as Boolean {
+    var env = new FakeEnv();
+    var io = new FakeIo();
+    var c = Kit.openedWith(env, io, ["played_param"]);
+    Kit.turnSent(env, c);
+    env.reply("/events", 200, {"cursor" => 3, "events" => [{"i" => 1, "state" => "generating"}, {"i" => 2, "state" => "speaking"}, {"i" => 3, "piece" => 0, "ms" => 1500}]});
+    env.reply("/piece/0", 200, Kit.silence(4000));
+    c.piecePlayed(0);
+    // whatever is in flight is answered: the report goes with the events request after it
+    env.replyOnly(200, {"cursor" => 3, "events" => []});
+    var params = env.paramsOf("/events");
+    var rides = params != null && (params["played"] as Number?) == 0;
+    env.replyOnly(200, {"cursor" => 3, "events" => []});
+    var after = env.paramsOf("/events");
+    return rides && after != null && !after.hasKey("played") && !env.asked("/played");
+}
+
+(:test)
+function theFirstPieceIsAskedForAheadOfItsAnnouncementWhereTheServerOffersIt(logger as Logger) as Boolean {
+    var env = new FakeEnv();
+    var io = new FakeIo();
+    var c = Kit.openedWith(env, io, ["piece_wait"]);
+    Kit.turnSent(env, c);
+    env.reply("/events", 200, {"cursor" => 1, "events" => [{"i" => 1, "state" => "generating"}]});
+    var ahead = env.onlyOpen().find("/piece/0?wait=") != null;
+    // it has not come in time: the events are asked without a wait, then the piece again
+    env.replyOnly(204, null);
+    var between = env.onlyOpen().find("/events") != null && env.eventsWait() == 0;
+    env.replyOnly(200, {"cursor" => 1, "events" => []});
+    var again = env.onlyOpen().find("/piece/0?wait=") != null;
+    env.replyOnly(200, Kit.silence(4000));
+    var playing = io.played.size() == 1 && io.played[0] == 0;
+    // its announcement follows and does not fetch it a second time; the next piece is fetched as announced
+    env.reply("/events", 200, {"cursor" => 4, "events" => [{"i" => 2, "state" => "speaking"}, {"i" => 3, "piece" => 0, "ms" => 1500}, {"i" => 4, "piece" => 1, "ms" => 1500}]});
+    var next = env.onlyOpen();
+    return ahead && between && again && playing && next.find("/piece/1") != null && next.find("wait=") == null;
+}
+
+(:test)
+function silenceAfterAnAnswerEndsAComputerCallAndNothingElse(logger as Logger) as Boolean {
+    var quiet = {"cursor" => 9, "events" => [{"i" => 9, "notice" => {"code" => "no_speech", "text" => "Nothing heard."}}]};
+    // before any answer the notice changes nothing
+    var env = new FakeEnv();
+    var io = new FakeIo();
+    var c = Kit.opened(env, io);
+    env.clock = 6000;
+    c.tick();
+    env.reply("/events", 200, quiet);
+    var first = !c.closed() && c.recording;
+    // after an answer it ends the call, with its own signal
+    c.noteGap(0, false);
+    env.clock = 12000;
+    c.tick();
+    env.reply("/events", 200, {"cursor" => 10, "events" => [{"i" => 10, "notice" => {"code" => "no_speech", "text" => "Nothing heard."}}]});
+    var ended = c.closed() && io.cues.indexOf(CallLogic.CUE_BYE) >= 0 && env.indexEnding("/c1") >= 0;
+    // in a session's call a long quiet is his to have
+    var env2 = new FakeEnv();
+    var io2 = new FakeIo();
+    var c2 = Kit.opened(env2, io2);
+    c2.noteGap(0, false);
+    env2.clock = 6000;
+    c2.tick();
+    env2.reply("/events", 200, {"cursor" => 1, "events" => [{"i" => 1, "state" => "recording", "owner" => "session", "session" => "Notes"}]});
+    env2.clock = 12000;
+    c2.tick();
+    env2.reply("/events", 200, quiet);
+    return first && ended && !c2.closed() && c2.recording;
+}
+
+(:test)
+function inASessionsCallTheMicrophoneFollowsItsPhasesAndBackAsksForComputer(logger as Logger) as Boolean {
+    var env = new FakeEnv();
+    var io = new FakeIo();
+    var c = Kit.opened(env, io);
+    Kit.turnSent(env, c);
+    // Computer hands the call to a session, which waits: no turn starts by itself
+    env.reply("/events", 200, {"cursor" => 2, "events" => [{"i" => 1, "state" => "generating"}, {"i" => 2, "state" => "wake", "owner" => "session", "session" => "Notes"}]});
+    var face = CallScreen.face(c);
+    var waiting = c.inSession() && io.captures == 1 && !c.recording && face.title.equals("Notes");
+    // Start begins a turn there; the session's recording phase begins one by itself
+    c.press();
+    var byPress = io.captures == 2 && c.recording;
+    env.replyOnly(200, {"cursor" => 2, "events" => []});
+    c.chunk(Kit.silence(300));
+    c.press();
+    c.captureEnded();
+    env.settleUntilEvents();
+    env.reply("/events", 200, {"cursor" => 3, "events" => [{"i" => 3, "state" => "recording", "owner" => "session", "session" => "Notes"}]});
+    var byPhase = io.captures == 3 && c.recording;
+    // Back: the turn is dropped unsent, the server is asked for Computer, and nothing records meanwhile
+    c.chunk(Kit.silence(100));
+    c.back();
+    var command = env.paramsOf("/command");
+    var asked = command != null && (command["action"] as String).equals("back") && (command["back"] as Number) == 1 && !c.recording;
+    env.replyOnly(200, {});
+    env.reply("/events", 200, {"cursor" => 4, "events" => [{"i" => 4, "state" => "recording", "owner" => "session", "session" => "Notes"}]});
+    var held = io.captures == 3;
+    env.reply("/events", 200, {"cursor" => 5, "events" => [{"i" => 5, "state" => "listening", "owner" => "computer", "session" => null}]});
+    return waiting && byPress && byPhase && asked && held && !c.inSession() && io.captures == 4 && c.recording
+        && CallScreen.face(c).title.equals("Computer");
+}
+
+(:test)
+function afterThePressTheAudioWaitsAMomentForTheMicrophonesLastData(logger as Logger) as Boolean {
+    var env = new FakeEnv();
+    var io = new FakeIo();
+    var c = Kit.opened(env, io);
+    c.chunk(Kit.silence(300));
+    env.clock = 1000;
+    c.press();
+    env.clock = 1250;
+    c.tick();
+    // the capture has not said it stopped: its last data may still come
+    var held = env.inFlight() == 0;
+    c.chunk(Kit.silence(100));
+    c.captureEnded();
+    var body = env.bodyOf("/audio");
+    var whole = body != null && body.size() == 410;
+    // a capture that never says so is not waited for long
+    var env2 = new FakeEnv();
+    var io2 = new FakeIo();
+    var c2 = Kit.opened(env2, io2);
+    c2.chunk(Kit.silence(300));
+    env2.clock = 1000;
+    c2.press();
+    env2.clock = 1500;
+    c2.tick();
+    return held && whole && env2.onlyOpen().find("/audio") != null;
 }

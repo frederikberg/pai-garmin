@@ -26,6 +26,13 @@
 // GET /__stub/call-forget?n=<n> makes the server lose the last n chunks of the turn; mode=bad_audio answers audio with 422;
 // GET /__stub/call-notice?code=<code>&text=<text> sends a notice event to every call;
 // GET /__stub/call-think?ms=<ms> sets how long it thinks before speaking; GET /__stub/call-end?reason=<text> ends every call; GET /__stub/call-owner?on=1 answers the open with 403 owner_only.
+//
+// The optional features of the call (docs/api.md, "Optional features") are on by default: FEATURES=none,
+// or GET /__stub/call-features?on=<0|1> for calls opened afterwards, makes the stub a server without them.
+// GET /__stub/call-session?title=<title>&phase=<wake|recording> hands every call to a session's call
+// (a press there sends the turn and the answer follows in the wake phase); a back command, or
+// GET /__stub/call-session?off=1, gives it back to Computer. A no_speech notice is sent with
+// GET /__stub/call-notice?code=no_speech.
 const port = Number(process.env.PORT ?? 8099)
 const key = process.env.WATCH_KEY ?? 'stub-key'
 let scenario = process.env.SCENARIO ?? 'alarms'
@@ -120,7 +127,13 @@ type Call = {
   played: Set<number>
   generation: number
   timers: ReturnType<typeof setTimeout>[]
+  features: boolean
+  owner: string
+  session: string | null
+  backs: Set<number>
 }
+const FEATURES = ['end_on_audio', 'played_param', 'piece_wait', 'no_speech', 'session_mode']
+let featuresOn = (process.env.FEATURES ?? 'all') !== 'none'
 const calls = new Map<string, Call>()
 let ownerOnly = false
 // how long the stub "thinks" before it speaks; GET /__stub/call-think?ms=<ms>
@@ -136,7 +149,29 @@ function emit(call: Call, event: Record<string, unknown>) {
 }
 function setState(call: Call, state: string) {
   call.state = state
-  emit(call, { state })
+  emit(call, call.features ? { state, owner: call.owner, session: call.session } : { state })
+}
+// A press: in a session's call it sends the turn; with Computer it ends the turn or cuts the answer.
+function applyPress(call: Call, press: number, turn: number) {
+  console.log(`  press ${press} for turn ${turn} in state ${call.state}`)
+  if (call.presses.has(press)) return
+  call.presses.add(press)
+  call.pressApplied = Math.max(call.pressApplied, press)
+  const unheard = [...call.pieces.keys()].some((n) => !call.played.has(n))
+  if (call.state === 'generating' || call.state === 'speaking' || unheard) {
+    call.generation++
+    call.timers.forEach(clearTimeout)
+    const unplayed = [...call.pieces.keys()].filter((n) => !call.played.has(n)).length
+    emit(call, { clear: true, dropped: unplayed })
+    call.pieces.forEach((_, n) => !call.played.has(n) && call.pieces.delete(n))
+    setState(call, call.owner === 'session' ? 'wake' : 'listening')
+  } else if (call.owner === 'session') {
+    emit(call, { heard: `Sent to ${call.session}.` })
+    setState(call, 'wake')
+    later(call, thinkMs, () => void addPiece(call, 0))
+  } else {
+    answer(call)
+  }
 }
 async function addPiece(call: Call, k: number) {
   const n = call.nextPiece++
@@ -156,10 +191,17 @@ function answer(call: Call) {
     later(call, 300 + 3 * 500 + 200, () => setState(call, 'listening'))
   })
 }
+function toComputer(call: Call) {
+  call.generation++
+  call.owner = 'computer'
+  call.session = null
+  setState(call, 'listening')
+}
 function openCall(): Call {
   const call: Call = {
     id: crypto.randomUUID(), events: [], waiters: [], expected: new Map(), bytes: 0, chunks: 0, presses: new Set(), pressApplied: 0, ended: false,
     state: 'ready', pieces: new Map(), nextPiece: 0, played: new Set(), generation: 0, timers: [],
+    features: featuresOn, owner: 'computer', session: null, backs: new Set(),
   }
   calls.set(call.id, call)
   setState(call, 'ready')
@@ -195,7 +237,7 @@ async function callRoute2(req: Request, url: URL, sub: string): Promise<Response
   if (sub === '' && req.method === 'POST') {
     if (ownerOnly) return json({ detail: 'owner_only' }, 403)
     const call = openCall()
-    return json({ call: call.id }, 201)
+    return json(call.features ? { call: call.id, features: FEATURES } : { call: call.id }, 201)
   }
   const m = sub.match(/^\/([^/]+)(\/.*)?$/)
   if (!m) return json({ detail: 'not found' }, 404)
@@ -224,28 +266,28 @@ async function callRoute2(req: Request, url: URL, sub: string): Promise<Response
       call.bytes += body.length
       call.chunks += 1
     }
+    // the press that ends the turn may ride on its last chunk
+    const end = Number(url.searchParams.get('end') ?? 0)
+    if (call.features && end > 0) applyPress(call, end, turn)
     return json({ next_seq: call.expected.get(turn) })
   }
   if (rest === '/command' && req.method === 'POST') {
-    const body = (await req.json().catch(() => ({}))) as { action?: string; press?: number; turn?: number }
+    const body = (await req.json().catch(() => ({}))) as { action?: string; press?: number; turn?: number; back?: number }
+    if (call.features && body.action === 'back' && Number.isInteger(body.back)) {
+      console.log(`  back ${body.back} with ${call.owner}`)
+      if (!call.backs.has(body.back!) && call.owner === 'session') toComputer(call)
+      call.backs.add(body.back!)
+      return json({})
+    }
     const press = Number(body.press)
     if (body.action !== 'press' || !Number.isInteger(press) || !Number.isInteger(body.turn)) return json({ detail: 'bad command' }, 422)
-    console.log(`  press ${press} for turn ${body.turn} in state ${call.state}`)
-    if (call.presses.has(press)) return json({})
-    call.presses.add(press)
-    call.pressApplied = Math.max(call.pressApplied, press)
-    const unheard = [...call.pieces.keys()].some((n) => !call.played.has(n))
-    if (call.state === 'generating' || call.state === 'speaking' || unheard) {
-      call.generation++
-      call.timers.forEach(clearTimeout)
-      const unplayed = [...call.pieces.keys()].filter((n) => !call.played.has(n)).length
-      emit(call, { clear: true, dropped: unplayed })
-      call.pieces.forEach((_, n) => !call.played.has(n) && call.pieces.delete(n))
-      setState(call, 'listening')
-    } else {
-      answer(call)
-    }
+    applyPress(call, press, body.turn!)
     return json({})
+  }
+  const played = url.searchParams.get('played')
+  if (call.features && played !== null && (rest === '/events' || rest.startsWith('/piece/'))) {
+    console.log(`  played ${played} (on ${rest})`)
+    call.played.add(Number(played))
   }
   if (rest === '/events' && req.method === 'GET') {
     const after = Number(url.searchParams.get('after') ?? 0)
@@ -266,6 +308,9 @@ async function callRoute2(req: Request, url: URL, sub: string): Promise<Response
   const piece = rest.match(/^\/piece\/(\d+)$/)
   if (piece && req.method === 'GET') {
     const n = Number(piece[1])
+    const wait = call.features ? Math.min(Number(url.searchParams.get('wait') ?? 0), 15) : 0
+    for (let waited = 0; !call.pieces.has(n) && waited < wait * 1000; waited += 50) await new Promise((r) => setTimeout(r, 50))
+    if (wait > 0 && !call.pieces.has(n)) return new Response(null, { status: 204 })
     const data = call.pieces.get(n)
     if (!data || call.played.has(n)) return json({ detail: 'gone' }, 404)
     return new Response(data, { headers: { 'content-type': 'application/octet-stream' } })
@@ -362,6 +407,20 @@ Bun.serve({
       const notice = { code: url.searchParams.get('code') ?? 'note', text: url.searchParams.get('text') ?? 'A notice.' }
       calls.forEach((call) => emit(call, { notice }))
       return json({ notice })
+    }
+    if (path === '/__stub/call-features') {
+      featuresOn = url.searchParams.get('on') !== '0'
+      return json({ featuresOn })
+    }
+    if (path === '/__stub/call-session') {
+      const off = url.searchParams.get('off') === '1'
+      calls.forEach((call) => {
+        if (off) return toComputer(call)
+        call.owner = 'session'
+        call.session = url.searchParams.get('title') ?? 'A session'
+        setState(call, url.searchParams.get('phase') ?? 'wake')
+      })
+      return json({ session: !off })
     }
     if (path === '/__stub/call-owner') {
       ownerOnly = url.searchParams.get('on') === '1'

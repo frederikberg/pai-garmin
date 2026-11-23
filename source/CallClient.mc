@@ -147,6 +147,11 @@ class CallClient {
     const OPEN_WAIT_MS = 2500;
     // audio goes out once this much is waiting, or when the turn is over: about a second of Opus a request
     const AUDIO_MIN = 2048;
+    // after the press the rest of the audio waits this long for the capture to hand over its last data,
+    // so that one request carries all of it
+    const TAIL_WAIT_MS = 400;
+    // how long a request for the answer's first piece waits on the server for it
+    const PIECE_WAIT_S = 2;
     // the buzz for a sent turn comes this long after the press even if the capture has not said it stopped
     const SENT_CUE_MS = 300;
     // a gap between clock ticks longer than this is traced
@@ -238,6 +243,30 @@ class CallClient {
     private var _soundMs as Number = -1;
     private var _stored as Boolean = false;
     private var _stopping as Boolean = false;
+    // what the server offers beyond the plain routes, by name, from its answer to the open
+    private var _features as Dictionary<String, Boolean> = {};
+    // who answers: "computer", or a session's call the call was handed to, with the session's title
+    var owner as String = "computer";
+    var sessionTitle as String = "";
+    // the press that ends the current turn (0 before there is one), and the one riding on the audio
+    // request in flight
+    private var _endPress as Number = 0;
+    private var _bodyEnd as Number = 0;
+    // the played report riding on the events or piece request in flight
+    private var _riding as Number = -1;
+    // the answer's first piece is asked for before the events announce it; after a wait that brought
+    // none, the events are asked once before the next
+    private var _expectPiece as Boolean = false;
+    private var _eventsFirst as Boolean = false;
+    // the piece being fetched: its number, its length in ms, and whether it was asked for unannounced
+    private var _fetchN as Number = -1;
+    private var _fetchLen as Number = 0;
+    private var _fetchSpec as Boolean = false;
+    private var _backs as Number = 0;
+    // Back was pressed in a session's call: no turn starts until Computer has the call again
+    private var _leaving as Boolean = false;
+    // an answer has played since the app opened
+    private var _answered as Boolean = false;
     private var _micSaid as Boolean = false;
     private var _lastTick as Number = 0;
     private var _logToCall as Boolean = true;
@@ -332,9 +361,10 @@ class CallClient {
         return _closing;
     }
 
-    // True from Start until the server answers: the press is on its way.
+    // True from Start until the server says what it does with the turn: the press is on its way, or
+    // taken and not yet answered by a new state.
     function sending() as Boolean {
-        return _endPending || (_turnSent && _turnSentPoll < 0);
+        return _endPending || _turnSent;
     }
 
     // A new call in place of the current one.
@@ -552,6 +582,33 @@ class CallClient {
         return _call != null;
     }
 
+    private function offers(feature as String) as Boolean {
+        return _features.hasKey(feature);
+    }
+
+    // The call is in a session's hands, not Computer's.
+    function inSession() as Boolean {
+        return !owner.equals("computer");
+    }
+
+    // Back in a session's call: what is being recorded is dropped unsent and the server is asked to
+    // give the call back to Computer.
+    function back() as Void {
+        if (_closing || _call == null) {
+            return;
+        }
+        if (recording || _captureOpen) {
+            stopCapture();
+            discardTurn();
+        }
+        _leaving = true;
+        _backs += 1;
+        _commands.add({"action" => "back", "back" => _backs} as Dictionary<String, Object>);
+        Trace.add("back", {"back" => _backs});
+        pump();
+        changed();
+    }
+
     // One line for the turn that ended: how long the microphone took to deliver, the bytes sent, how long
     // after the press the capture stopped (stop_ms), the server had the press (sent_ms) and the first
     // sound played (sound_ms), how long the first piece took to be known after that (piece_ms) and to
@@ -581,6 +638,7 @@ class CallClient {
     // The player started a piece: the silence before it, and whether the piece before had to wait for it.
     function noteGap(gapMs as Number, starved as Boolean) as Void {
         _pieceN += 1;
+        _answered = true;
         if (_soundMs < 0 && _pressAt > 0) {
             _soundMs = _env.now() - _pressAt;
         }
@@ -614,6 +672,8 @@ class CallClient {
         _sentBytes = 0;
         _sentBase = 0;
         _conflicts = 0;
+        _endPress = 0;
+        _bodyEnd = 0;
         _afterPress = _press;
         _lanes[AUDIO].token += 1;
         _lanes[AUDIO].busy = false;
@@ -676,6 +736,7 @@ class CallClient {
         _chunks = [];
         _chunkBytes = 0;
         _body = null;
+        _bodyEnd = 0;
         _resend = [];
         _sentBodies = [];
         _sentBytes = 0;
@@ -696,17 +757,35 @@ class CallClient {
             setNotice("Heard nothing");
             return;
         }
-        queuePress();
+        queuePress(endPress());
         _turnSent = true;
         _turnSentPoll = -1;
         changed();
     }
 
-    private function queuePress() as Void {
-        _press += 1;
-        _commands.add({"action" => "press", "press" => _press, "turn" => _turn} as Dictionary<String, Object>);
+    // The number of the press that ends the current turn: the same one however often it is sent, on
+    // the last audio request or as a command.
+    private function endPress() as Number {
+        if (_endPress == 0) {
+            _press += 1;
+            _endPress = _press;
+        }
+        return _endPress;
+    }
+
+    private function queuePress(number as Number) as Void {
+        _commands.add({"action" => "press", "press" => number, "turn" => _turn} as Dictionary<String, Object>);
         _holdUntil = _env.now() + PRESS_HOLD_MS;
-        Trace.add("press", {"press" => _press, "turn" => _turn});
+        Trace.add("press", {"press" => number, "turn" => _turn});
+    }
+
+    // The server has the press that ended the turn: from here the answer is waited for.
+    private function pressTaken() as Void {
+        if (_turnSentPoll < 0) {
+            _turnSentPoll = _pollsSent;
+            _sentMs = _env.now() - _pressAt;
+        }
+        _failStreak = 0;
     }
 
     // The answer is cut: playback stops now, the press goes out, and the next turn is recorded.
@@ -715,7 +794,9 @@ class CallClient {
         dropPieces();
         _turnSent = false;
         _turnSentPoll = -1;
-        queuePress();
+        _expectPiece = false;
+        _press += 1;
+        queuePress(_press);
         startTurn();
     }
 
@@ -801,7 +882,9 @@ class CallClient {
     }
 
     private function autoRecord(now as Number) as Void {
-        if (!_closing && _call != null && !recording && !_endPending && !_turnSent && engine.equals("listening")
+        // Computer listens after every answer; a session's call records only in its recording phase
+        if (!_closing && _call != null && !recording && !_endPending && !_turnSent && !_leaving
+                && (engine.equals("listening") || engine.equals("recording"))
                 && !playbackActive && !moreToPlay() && now >= _autoAt && fatal == null && stalled == null
                 && !_io.busy.invoke()) {
             startTurn();
@@ -862,6 +945,11 @@ class CallClient {
         // the log when it is due (which is rarely), the events. The events jump the queue when they
         // have waited too long. While his turn is open nothing is expected from the server, so the
         // events are only asked now and then, without a wait, and never hold up the audio.
+        var riding = offers("played_param");
+        if (riding && _commands.size() > 0 && _playedQueue.size() > 0 && now < _holdUntil && ready(EVENTS)) {
+            // a press waits for the played reports before it, and those ride on an events request
+            sendEvents(call);
+        }
         if (_commands.size() > 0 && ready(CMD) && (_playedQueue.size() == 0 || now >= _holdUntil)) {
             sendCommand(call);
         }
@@ -874,8 +962,12 @@ class CallClient {
         if (_pieces.size() > 0 && !recording && _unplayed < UNPLAYED_MAX && ready(PIECE)) {
             sendPiece(call);
         }
-        if (_playedQueue.size() > 0 && ready(PLAYED)) {
+        if (_playedQueue.size() > 0 && !riding && ready(PLAYED)) {
             sendPlayed(call);
+        }
+        if (_expectPiece && !_eventsFirst && _pieces.size() == 0 && !recording && ready(PIECE)) {
+            // the answer's first piece, asked for before the events announce it
+            fetchPiece(call, _lastPiece + 1, 0, true);
         }
         if (logDue && ready(LOG)) {
             sendLog(call);
@@ -895,6 +987,10 @@ class CallClient {
     private function audioDue() as Boolean {
         if (_body != null || _resend.size() > 0) {
             return true;
+        }
+        if (_endPending && _captureOpen && _env.now() - _pressAt < TAIL_WAIT_MS) {
+            // the capture is about to hand over its last data: one request then carries it all
+            return false;
         }
         return _chunks.size() > 0 && (_chunkBytes >= AUDIO_MIN || !recording);
     }
@@ -968,7 +1064,12 @@ class CallClient {
         _pollsSent += 1;
         _pollNo = _pollsSent;
         _lastEventsAt = _env.now();
-        var params = {"after" => _cursor, "wait" => turnOpen() ? 0 : POLL_WAIT_S} as Dictionary<Object, Object>;
+        var params = {"after" => _cursor, "wait" => turnOpen() || _expectPiece ? 0 : POLL_WAIT_S} as Dictionary<Object, Object>;
+        _riding = -1;
+        if (offers("played_param") && _playedQueue.size() > 0) {
+            _riding = _playedQueue[0];
+            params["played"] = _riding;
+        }
         go(EVENTS, Communications.HTTP_REQUEST_METHOD_GET, "/" + call + "/events", params, jsonOptions(null));
     }
 
@@ -990,18 +1091,42 @@ class CallClient {
             }
             _body = body;
         }
+        if (_bodyEnd == 0 && offers("end_on_audio") && _endPending && !_captureOpen && _chunks.size() == 0
+                && _resend.size() == 0 && _turnBytes > 0) {
+            // the turn's last audio: the press that ends it rides along
+            var first = _endPress == 0;
+            _bodyEnd = endPress();
+            if (first) {
+                Trace.add("press", {"press" => _bodyEnd, "turn" => _turn, "on" => "audio"});
+            }
+        }
         var options = jsonOptions("audio/ogg");
         options[:body] = _body as Object;
-        go(AUDIO, Communications.HTTP_REQUEST_METHOD_POST, "/" + call + "/audio?turn=" + _turn + "&seq=" + _seq + "&after_press=" + _afterPress, null, options);
+        go(AUDIO, Communications.HTTP_REQUEST_METHOD_POST, "/" + call + "/audio?turn=" + _turn + "&seq=" + _seq
+            + "&after_press=" + _afterPress + (_bodyEnd > 0 ? "&end=" + _bodyEnd : ""), null, options);
     }
 
     private function sendPiece(call as String) as Void {
-        var n = _pieces[0]["n"] as Number;
+        fetchPiece(call, _pieces[0]["n"] as Number, _pieces[0]["ms"] as Number, false);
+    }
+
+    // Asks for piece n. An announced one is there; one asked for ahead of its announcement (spec) is
+    // waited for on the server, which answers without a body when it has not come in time.
+    private function fetchPiece(call as String, n as Number, ms as Number, spec as Boolean) as Void {
+        _fetchN = n;
+        _fetchLen = ms;
+        _fetchSpec = spec;
+        var query = spec ? "?wait=" + PIECE_WAIT_S : "";
+        _riding = -1;
+        if (offers("played_param") && _playedQueue.size() > 0) {
+            _riding = _playedQueue[0];
+            query += (spec ? "&" : "?") + "played=" + _riding;
+        }
         var options = {
             :headers => Wire.authorization(),
             :responseType => Communications.HTTP_RESPONSE_CONTENT_TYPE_OCTET_STREAM
         };
-        go(PIECE, Communications.HTTP_REQUEST_METHOD_GET, "/" + call + "/piece/" + n, null, options);
+        go(PIECE, Communications.HTTP_REQUEST_METHOD_GET, "/" + call + "/piece/" + n + query, null, options);
     }
 
     private function sendPlayed(call as String) as Void {
@@ -1051,7 +1176,26 @@ class CallClient {
         } else if ((lane != EVENTS && rtt > SLOW_MS) || rtt > (POLL_WAIT_S + 6) * 1000) {
             Trace.add("rtt", {"lane" => l.name, "ms" => rtt, "bytes" => bytes, "code" => code});
         }
-        if (code >= 200 && code < 300 || code == -400 && (lane == HANG || lane == PLAYED || lane == CMD || lane == LOG)) {
+        var ok = code >= 200 && code < 300;
+        if ((lane == EVENTS || lane == PIECE) && _riding >= 0) {
+            if (ok && _playedQueue.size() > 0 && _playedQueue[0] == _riding) {
+                _playedQueue = _playedQueue.slice(1, null) as Array<Number>;
+            }
+            _riding = -1;
+        }
+        if (lane == EVENTS) {
+            _eventsFirst = false;
+        }
+        var empty = !(data instanceof ByteArray) || data.size() == 0;
+        if (lane == PIECE && _fetchSpec && !_closing && ((ok && empty) || code == -400)) {
+            // the piece asked for ahead has not come yet: the events are asked, then it is asked for again
+            _eventsFirst = true;
+            l.failures = 0;
+            l.notBefore = 0;
+        } else if (lane == PIECE && _fetchSpec && !_closing && code == 404) {
+            // no piece will have that number: the events name the next one
+            _expectPiece = false;
+        } else if (ok || code == -400 && (lane == HANG || lane == PLAYED || lane == CMD || lane == LOG)) {
             if (succeeded(lane, code, data)) {
                 l.failures = 0;
                 l.notBefore = 0;
@@ -1139,7 +1283,17 @@ class CallClient {
             if (id instanceof String) {
                 _call = id;
                 _openMs = _env.now() - _openSentAt;
-                Trace.add("opened", {"call" => id, "ms" => _openMs});
+                _features = {};
+                var features = (data as Dictionary)["features"] as Object?;
+                if (features instanceof Array) {
+                    for (var i = 0; i < features.size(); i++) {
+                        var name = features[i] as Object?;
+                        if (name instanceof String) {
+                            _features[name] = true;
+                        }
+                    }
+                }
+                Trace.add("opened", {"call" => id, "ms" => _openMs, "features" => _features.keys().toString()});
             } else {
                 failed(OPEN, 0);
                 return false;
@@ -1150,24 +1304,43 @@ class CallClient {
             if (_commands.size() > 0) {
                 _commands = _commands.slice(1, null) as Array<Dictionary<String, Object>>;
             }
-            if (_turnSent && _turnSentPoll < 0) {
-                _turnSentPoll = _pollsSent;
-                _sentMs = _env.now() - _pressAt;
+            if (_turnSent) {
+                pressTaken();
             }
             _failStreak = 0;
         } else if (lane == AUDIO) {
+            var ended = _bodyEnd;
+            _bodyEnd = 0;
             keepSent();
             _seq += 1;
             _conflicts = 0;
+            if (ended > 0) {
+                // the press rode on this request: the turn is sent
+                _endPending = false;
+                _turnSent = true;
+                _turnSentPoll = -1;
+                pressTaken();
+            }
         } else if (lane == PIECE) {
-            if (data instanceof ByteArray && _pieces.size() > 0) {
-                var piece = _pieces[0];
-                var n = piece["n"] as Number;
+            if (data instanceof ByteArray && _fetchN >= 0 && (_fetchSpec || _pieces.size() > 0)) {
+                var n = _fetchN;
+                var ms = _fetchLen;
+                _fetchN = -1;
                 _unplayed += data.size();
                 _sizes[n] = data.size();
                 playbackActive = true;
-                nextPiece();
-                var ms = piece["ms"] as Number;
+                if (_fetchSpec) {
+                    // its announcement, with its length, is still to come: until the player says the piece
+                    // is over it counts as long as its bytes would last at 16 kbit/s, more than it is
+                    _expectPiece = false;
+                    _lastPiece = n > _lastPiece ? n : _lastPiece;
+                    ms = data.size() / 2;
+                    if (_pieceMs < 0 && _sentMs >= 0) {
+                        _pieceMs = _env.now() - _pressAt - _sentMs;
+                    }
+                } else {
+                    nextPiece();
+                }
                 var length = ms > 0 ? ms : PIECE_MS_DEFAULT;
                 var started = _lanes[PIECE].sentAt;
                 var now = _env.now();
@@ -1238,6 +1411,7 @@ class CallClient {
             _pieceTries += 1;
             if (_pieceTries >= PIECE_TRIES) {
                 Trace.add("piece_dropped", {"n" => _pieces.size() > 0 ? _pieces[0]["n"] : -1});
+                _expectPiece = false;
                 nextPiece();
             }
         }
@@ -1278,6 +1452,8 @@ class CallClient {
         // an error answer may reach the watch without its body: then everything still held goes again
         // from the oldest chunk, which the server skips where it has it
         var next = field instanceof Number ? field : _sentBase;
+        // the press goes again with the last audio, or as a command, under the same number
+        _bodyEnd = 0;
         _conflicts += 1;
         if (_conflicts > MAX_CONFLICTS) {
             abandonTurn("Lost audio, try again", "Audio lost on the link");
@@ -1423,7 +1599,24 @@ class CallClient {
         var piece = e["piece"] as Object?;
         if (state instanceof String) {
             engine = state;
+            var who = e["owner"] as Object?;
+            if (who instanceof String) {
+                var title = e["session"] as Object?;
+                if (!who.equals(owner)) {
+                    Trace.add("owner", {"owner" => who});
+                }
+                owner = who;
+                sessionTitle = title instanceof String ? title : "";
+                if (who.equals("computer")) {
+                    _leaving = false;
+                }
+            }
             Trace.debug("state", {"state" => state});
+            if (state.equals("generating")) {
+                _expectPiece = offers("piece_wait") && !inSession() && _pieces.size() == 0;
+            } else if (!state.equals("speaking")) {
+                _expectPiece = false;
+            }
             if (state.equals("generating") || state.equals("speaking")) {
                 _turnSent = false;
             } else if (_turnSent && _commands.size() == 0 && _turnSentPoll >= 0 && _pollNo > _turnSentPoll) {
@@ -1435,6 +1628,7 @@ class CallClient {
             if (piece > _lastPiece) {
                 _lastPiece = piece;
                 _pieces.add({"n" => piece, "ms" => ms instanceof Number ? ms : 0} as Dictionary<String, Number>);
+                _expectPiece = false;
                 if (_pieceMs < 0 && _sentMs >= 0) {
                     _pieceMs = _env.now() - _pressAt - _sentMs;
                 }
@@ -1442,6 +1636,7 @@ class CallClient {
             }
         } else if (e["clear"] != null) {
             Trace.add("clear", {"dropped" => e["dropped"]});
+            _expectPiece = false;
             dropPieces();
             _io.stopPlayback.invoke();
         } else if (e["notice"] instanceof Dictionary) {
@@ -1449,6 +1644,15 @@ class CallClient {
             var text = n["text"] as Object?;
             var code = n["code"] as Object?;
             Trace.add("notice", {"code" => code});
+            if ("no_speech".equals(code)) {
+                // nothing was said after an answer: with Computer the call is over, and the watch ends it
+                if (!inSession() && _answered && !_closing) {
+                    Trace.add("self_end", null);
+                    _io.cue.invoke(CallLogic.CUE_BYE);
+                    hangUp();
+                }
+                return;
+            }
             setNotice(text instanceof String ? text : "Notice");
             if ("heard_nothing".equals(code)) {
                 // the press had nothing to answer: listening goes on
@@ -1515,6 +1719,15 @@ class CallClient {
         _logHold = false;
         _press = 0;
         _afterPress = 0;
+        _features = {};
+        owner = "computer";
+        sessionTitle = "";
+        _leaving = false;
+        _backs = 0;
+        _riding = -1;
+        _expectPiece = false;
+        _eventsFirst = false;
+        _fetchN = -1;
         _turn = 0;
         _turnSent = false;
         _turnSentPoll = -1;

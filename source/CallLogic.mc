@@ -34,13 +34,17 @@ module CallLogic {
     const CUE_SENT = 0;
     const CUE_YOUR_TURN = 1;
     const CUE_ERROR = 2;
+    const CUE_BYE = 3;
     // How the watch buzzes for a signal, as [strength 0-100, length in ms] with strength 0 a pause.
-    // "Speak" (the microphone delivers) is one short buzz, "sent" two short ones, an error one long.
+    // "Speak" (the microphone delivers) is one short buzz, "sent" two short ones, an error one long,
+    // and a call the watch ended by itself two short ones and a longer one.
     function buzz(kind as Number) as Array<Array<Number>> {
         if (kind == CUE_YOUR_TURN) {
             return [[100, 120]];
         } else if (kind == CUE_SENT) {
             return [[100, 70], [0, 90], [100, 70]];
+        } else if (kind == CUE_BYE) {
+            return [[100, 70], [0, 90], [100, 70], [0, 90], [100, 300]];
         }
         return [[100, 700]];
     }

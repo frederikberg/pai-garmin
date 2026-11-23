@@ -127,7 +127,13 @@ class ComputerView extends WatchUi.View {
     }
 
     // Back: the hang-up goes to the server first, then the screen leaves; a second Back leaves at once.
+    // In a session's call it asks for Computer instead.
     function back() as Boolean {
+        if (_client.inSession() && !_client.closed()) {
+            // in a session's call Back returns to Computer; the call goes on
+            _client.back();
+            return true;
+        }
         if (_client.closed()) {
             _left = true;
             return false;
