@@ -5,8 +5,9 @@ import Toybox.Time;
 import Toybox.Timer;
 import Toybox.WatchUi;
 
-// The glance-list entry: the app name over the next alarm, or "Alarm ringing". It starts from the
-// last line it remembered and refreshes from the server while it is on screen.
+// The glance-list entry: the app name over the next alarm, or that one rings. It starts from the last line it
+// remembered and refreshes from the server while it is on screen. An alarm it finds ringing is
+// stopped at once, with one short buzz.
 (:glance, :glanceView)
 class PaiGlance extends WatchUi.GlanceView {
     const REFRESH_MS = 15000;
@@ -14,6 +15,7 @@ class PaiGlance extends WatchUi.GlanceView {
 
     private var _text as String;
     private var _timer as Timer.Timer = new Timer.Timer();
+    private var _stopping as Boolean = false;
 
     function initialize() {
         GlanceView.initialize();
@@ -38,10 +40,22 @@ class PaiGlance extends WatchUi.GlanceView {
 
     function onResponse(responseCode as Number, data as Dictionary or String or Null) as Void {
         var state = Outcome.fromResponse(responseCode, data, true).state;
+        if (state != null && state.ringing.size() > 0 && !_stopping) {
+            _stopping = true;
+            Wire.send(Api.dismissAll(), method(:onDismissed));
+        }
         if (state != null) {
             _text = state.summary(Time.now());
             Application.Storage.setValue(STORAGE_KEY, _text);
             WatchUi.requestUpdate();
+        }
+    }
+
+    function onDismissed(responseCode as Number, data as Dictionary or String or Null) as Void {
+        _stopping = false;
+        if (Outcome.fromResponse(responseCode, data, false).isOk()) {
+            Buzz.once();
+            refresh();
         }
     }
 

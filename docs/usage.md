@@ -10,12 +10,13 @@ The key travels through Garmin's app settings, so revoke it on the server if you
 
 However you open the app (the app list, a hot key set to the app, or the glance list, where the glance shows the next alarm, or that one rings, and Start opens the app) the menu comes first. It appears at once, without waiting for the network: *Computer* (selected, only on watches with audio), *Weather*, *Alarm* and, on watches with audio, *Self-report*. Start opens the screen you chose, and only then does anything go to the server, so from a hot key one more Start begins a call.
 
-Right after the app opens it also checks, in the background, whether an alarm rings. The check goes out first, so a screen opened in the meantime shows "Loading..." for a moment and its request follows once the check is over. If nothing rings, the check is invisible. If an alarm rings, the app stops every ringing alarm by itself, drops whatever you had just opened and shows the alarm's time and name with "Stopping..." and then "Alarm stopped"; Start returns to the menu. If stopping fails, the screen says why and Start tries again. The glance only shows that an alarm rings; it never stops it.
+The app also comes back on the menu after it was hidden: the watch face, another app, recent apps or the glance list. A Computer call stays up through a hide of less than ten seconds (a notification, the music controls); a longer one hangs it up on the way back to the menu, and a call the app never returns to ends on the server once the watch has stopped asking for it.
+
+If the menu stays on screen for a second after the app opened or came back, with no sub-app chosen, the app checks whether an alarm rings. If one does, every ringing alarm is stopped and one short buzz says so; nothing else changes on screen. A sub-app chosen within that second skips the check, so a quick way in never waits for it; a sub-app chosen while the check is out shows "Loading..." until it is over. The glance stops a ringing alarm it sees in the same way, with the same buzz.
 
 Back leaves a screen; Back on the menu exits the app.
 
 <p align="center">
-  <img src="images/ringing.png" alt="The screen after a ringing alarm was stopped: Alarm stopped, 14:39, Alarm, with the hint Enter: menu" width="30%">
   <img src="images/home.png" alt="The menu with Computer selected and Weather below it" width="30%">
 </p>
 
