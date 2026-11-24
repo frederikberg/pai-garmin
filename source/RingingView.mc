@@ -12,7 +12,7 @@ class RingingView extends MessageView {
         MessageView.initialize("Alarm ringing");
         var first = ringing[0];
         var more = ringing.size() - 1;
-        _time = AlarmTime.hhmm(first.fireAt);
+        _time = AlarmTime.clock(first.fireAt);
         _name = first.name + (more > 0 ? " (+" + more + ")" : "");
         show(_time, _name, "Stopping...", null);
     }

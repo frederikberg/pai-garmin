@@ -85,3 +85,22 @@ function dayLabelsCountFromToday(logger as Logger) as Boolean {
     return AlarmTime.dayLabel(now, now).equals("Today") && AlarmTime.dayLabel(tomorrow, now).equals("Tomorrow")
         && AlarmTime.dayLabel(later, now).length() == 3;
 }
+
+(:test)
+function durationCountsFromNow(logger as Logger) as Boolean {
+    var now = new Time.Moment(1700000000);
+    return AlarmTime.afterDuration(now, 0, 0, 1).value() == 1700000001
+        && AlarmTime.afterDuration(now, 1, 2, 3).value() == 1700000000 + 3723
+        && AlarmTime.afterDuration(now, 23, 59, 59).value() == 1700000000 + 86399
+        && AlarmTime.durationSeconds(0, 0, 0) == 0;
+}
+
+(:test)
+function clockShowsSecondsOnlyWhenNotZero(logger as Logger) as Boolean {
+    var onTheMinute = new Time.Moment(1700000000 - AlarmTime.secondsOfDay(new Time.Moment(1700000000)) % 60);
+    var withSeconds = new Time.Moment(onTheMinute.value() + 7);
+    var plain = AlarmTime.clock(onTheMinute);
+    var long = AlarmTime.clock(withSeconds);
+    logger.debug(plain + " / " + long);
+    return plain.equals(AlarmTime.hhmm(onTheMinute)) && long.equals(AlarmTime.hhmm(onTheMinute) + ":07");
+}

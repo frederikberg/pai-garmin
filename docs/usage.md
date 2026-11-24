@@ -81,10 +81,11 @@ The Alarm screen lists *+ New* first, then the armed alarms, soonest first, each
 | list, on an alarm | Start | change its time |
 | list, on an alarm | hold Up | open its menu, whose only entry deletes it |
 | time entry | Up / Down | add / subtract one to the marked number, wrapping; held, it repeats and speeds up |
-| time entry | Start | from hours to minutes, then save |
-| time entry | Back | from minutes to hours, then cancel |
+| time entry | Start | to the next number, then save |
+| time entry | Back | to the previous number; from the first number of a new alarm to the choice *At time* / *In*, then cancel |
+| time entry, on the choice | Up / Down | switch between *At time* and *In* |
 
-An alarm has no name and rings once, at the next time the clock shows the chosen hour and minute. The time entry starts at the current time for a new alarm and at the alarm's own time for a change, and shows the current time underneath while you pick. Setting a new alarm to the minute it is now means tomorrow. After saving, the list is read from the server again and the saved alarm is selected, so the list always shows what the server holds, including alarms made on other devices.
+An alarm has no name and rings once. A new alarm is set *At time* (the default): hour and minute, ringing at the next time the clock shows them, starting at the current time with the current time shown underneath; setting it to the minute it is now means tomorrow. Back from the hours moves to the choice *At time* / *In*; *In* sets a duration from now as hours, minutes and seconds, starting at 0:00:00 (hours 0 to 23), shows when it will ring, and saves now plus that duration; a duration of zero is refused. A change is always a clock time and starts at the alarm's own time. An alarm whose time has seconds, which only a duration produces, is listed with them. After saving, the list is read from the server again and the saved alarm is selected, so the list always shows what the server holds, including alarms made on other devices.
 
 <p align="center">
   <img src="images/alarms.png" alt="The alarm list with + New above two alarms, one selected, and the hint Hold Up: delete" width="30%">

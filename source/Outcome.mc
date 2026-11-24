@@ -69,7 +69,7 @@ class AlarmState {
         }
         var next = alarms[0].fireAt;
         var day = AlarmTime.dayLabel(next, now);
-        return "Next " + AlarmTime.hhmm(next) + (day.equals("Today") ? "" : " " + day);
+        return "Next " + AlarmTime.clock(next) + (day.equals("Today") ? "" : " " + day);
     }
 }
 
