@@ -89,7 +89,8 @@ An alarm has no name and rings once. A new alarm is set *At time* (the default):
 
 <p align="center">
   <img src="images/alarms.png" alt="The alarm list with + New above two alarms, one selected, and the hint Hold Up: delete" width="30%">
-  <img src="images/new-alarm.png" alt="The time entry for a new alarm showing 15:00, the current time 15:00 underneath and the hours marked" width="30%">
+  <img src="images/new-alarm.png" alt="The time entry for a new alarm: At time chosen, the clock time with the hours marked, the current time underneath and the hint Back: At time / In" width="30%">
+  <img src="images/new-alarm-in.png" alt="The time entry for a new alarm in In mode: 0:00:00 with the hours marked" width="30%">
 </p>
 
 ## When something is wrong
