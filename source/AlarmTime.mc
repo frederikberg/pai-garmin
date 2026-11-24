@@ -2,7 +2,8 @@ import Toybox.Lang;
 import Toybox.Time;
 import Toybox.Time.Gregorian;
 
-// Alarm times: picked as hour and minute on the watch, sent to the server as UTC, shown in local time.
+// Alarm times: picked on the watch as hour and minute or as a duration from now, sent to the server
+// as UTC, shown in local time.
 (:glance)
 module AlarmTime {
     const DAY_SECONDS = 86400;
@@ -26,6 +27,15 @@ module AlarmTime {
         return new Time.Moment(fire + drift > now.value() ? fire + drift : fire);
     }
 
+    // Now plus a duration picked as hours, minutes and seconds.
+    function afterDuration(now as Time.Moment, hours as Number, minutes as Number, seconds as Number) as Time.Moment {
+        return new Time.Moment(now.value() + durationSeconds(hours, minutes, seconds));
+    }
+
+    function durationSeconds(hours as Number, minutes as Number, seconds as Number) as Number {
+        return hours * 3600 + minutes * 60 + seconds;
+    }
+
     function secondsOfDay(moment as Time.Moment) as Number {
         var info = Gregorian.info(moment, Time.FORMAT_SHORT);
         return info.hour * 3600 + info.min * 60 + info.sec;
@@ -43,6 +53,13 @@ module AlarmTime {
     function hhmm(moment as Time.Moment) as String {
         var info = Gregorian.info(moment, Time.FORMAT_SHORT);
         return (info.hour as Number).format("%02d") + ":" + (info.min as Number).format("%02d");
+    }
+
+    // Local time of day as HH:MM, with :SS appended when the seconds are not zero.
+    function clock(moment as Time.Moment) as String {
+        var info = Gregorian.info(moment, Time.FORMAT_SHORT);
+        var text = hhmm(moment);
+        return (info.sec as Number) == 0 ? text : text + ":" + (info.sec as Number).format("%02d");
     }
 
     // "Today", "Tomorrow" or the weekday abbreviation.

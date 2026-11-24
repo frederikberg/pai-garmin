@@ -13,3 +13,17 @@ function repeatingSpeedsUpToAFloor(logger as Logger) as Boolean {
     }
     return previous == TimeEntryView.FASTEST_MS && TimeEntryView.repeatPause(0) == TimeEntryView.SLOWEST_MS;
 }
+
+(:test)
+function numbersWrapAtTheirLimits(logger as Logger) as Boolean {
+    var hours = TimeEntryView.limits(true)[0];
+    return TimeEntryView.wrap(23, 1, hours) == 0 && TimeEntryView.wrap(0, -1, hours) == 23
+        && TimeEntryView.wrap(59, 1, 60) == 0 && TimeEntryView.wrap(0, -1, 60) == 59 && TimeEntryView.wrap(10, 1, 60) == 11;
+}
+
+(:test)
+function aDurationHasSecondsAndAClockTimeDoesNot(logger as Logger) as Boolean {
+    var duration = TimeEntryView.limits(true);
+    var clock = TimeEntryView.limits(false);
+    return duration.size() == 3 && clock.size() == 2 && duration[2] == 60;
+}

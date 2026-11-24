@@ -4,7 +4,7 @@ import Toybox.Time;
 import Toybox.WatchUi;
 
 // The Alarm sub-app: "+ New" first, then the armed alarms by fire time. Enter creates or edits
-// through the time picker; holding Up on an alarm opens its delete menu. Every change goes to the
+// through the time entry; holding Up on an alarm opens its delete menu. Every change goes to the
 // server and the list is read again afterwards, so the screen always shows the server's state.
 class AlarmListView extends WatchUi.View {
     // index 0 is "+ New", index n is _alarms[n - 1]
@@ -63,7 +63,7 @@ class AlarmListView extends WatchUi.View {
             return "+ New";
         }
         var at = _alarms[index - 1].fireAt;
-        return AlarmTime.hhmm(at) + " " + AlarmTime.dayLabel(at, now);
+        return AlarmTime.clock(at) + " " + AlarmTime.dayLabel(at, now);
     }
 
     // Keys act on the list only; a message or a request in flight owns the screen.
@@ -89,11 +89,11 @@ class AlarmListView extends WatchUi.View {
             }
         } else if (_selected == 0) {
             var now = Time.now();
-            TimeEntryView.open("New alarm", AlarmTime.hour(now), AlarmTime.minute(now), method(:onCreatePicked));
+            TimeEntryView.open("New alarm", AlarmTime.hour(now), AlarmTime.minute(now), true, method(:onCreatePicked));
         } else {
             var alarm = _alarms[_selected - 1];
             _editing = alarm;
-            TimeEntryView.open("Edit alarm", AlarmTime.hour(alarm.fireAt), AlarmTime.minute(alarm.fireAt), method(:onEditPicked));
+            TimeEntryView.open("Edit alarm", AlarmTime.hour(alarm.fireAt), AlarmTime.minute(alarm.fireAt), false, method(:onEditPicked));
         }
     }
 
@@ -102,7 +102,7 @@ class AlarmListView extends WatchUi.View {
             return;
         }
         var alarm = _alarms[_selected - 1];
-        var menu = new WatchUi.Menu2({:title => AlarmTime.hhmm(alarm.fireAt)});
+        var menu = new WatchUi.Menu2({:title => AlarmTime.clock(alarm.fireAt)});
         menu.addItem(new WatchUi.MenuItem("Delete", null, :delete, null));
         WatchUi.pushView(menu, new DeleteDelegate(self, alarm), WatchUi.SLIDE_UP);
     }
@@ -112,16 +112,14 @@ class AlarmListView extends WatchUi.View {
         WatchUi.popView(WatchUi.SLIDE_RIGHT);
     }
 
-    function onCreatePicked(hour as Number, minute as Number) as Void {
-        var at = AlarmTime.nextOccurrence(Time.now(), hour, minute);
+    function onCreatePicked(at as Time.Moment) as Void {
         _focusAt = at.value();
         begin("Saving...", Api.create(at), method(:onChanged));
     }
 
-    function onEditPicked(hour as Number, minute as Number) as Void {
+    function onEditPicked(at as Time.Moment) as Void {
         var alarm = _editing;
         if (alarm != null) {
-            var at = AlarmTime.nextOccurrence(Time.now(), hour, minute);
             _focusAt = at.value();
             begin("Saving...", Api.update(alarm.id, at), method(:onChanged));
         }
