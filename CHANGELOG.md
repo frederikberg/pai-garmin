@@ -4,6 +4,11 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+### Changed
+
+- The app comes back on its menu after it was hidden (the watch face, another app, recent apps, the glance list). A Computer call survives a hide of less than ten seconds; a longer one hangs it up.
+- Opening the app sends nothing until a sub-app is chosen. The check for a ringing alarm runs only after the menu has stayed on screen for a second; a ringing alarm is stopped with one short buzz and no screen. The glance stops a ringing alarm it sees the same way.
+
 ### Added
 
 - A new alarm can be set as a time from now: Back from the hours of the time entry reaches the choice *At time* / *In*, and *In* picks hours, minutes and seconds starting at 0:00:00, shows when the alarm will ring and saves now plus the duration (zero is refused). An alarm whose time has seconds is listed with them.

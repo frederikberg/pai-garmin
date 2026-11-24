@@ -41,3 +41,22 @@ function anOpenGateLetsACallStraightThrough(logger as Logger) as Boolean {
     new Call(counter.method(:onAnswer)).send(Api.weather());
     return counter.answers == 1 && Gate.waiting.size() == 0;
 }
+
+(:test)
+function aSubAppChosenWithinTheIdleTimeSkipsTheCheck(logger as Logger) as Boolean {
+    Gate.open = true;
+    Gate.arm();
+    var armed = Gate.idle != null;
+    Gate.disarm();
+    return armed && Gate.idle == null && Gate.open;
+}
+
+(:test)
+function aCheckThatCannotTellLetsTheWaitingCallsGo(logger as Logger) as Boolean {
+    var counter = new Counter();
+    Gate.waiting = [];
+    // without a configured server the check fails at once, which releases what waits
+    Gate.check();
+    new Call(counter.method(:onAnswer)).send(Api.weather());
+    return Gate.open && counter.answers == 1 && Gate.waiting.size() == 0;
+}
