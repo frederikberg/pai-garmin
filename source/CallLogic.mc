@@ -53,6 +53,11 @@ module CallLogic {
         return [[100, 700]];
     }
 
+    // The signal's name in the log.
+    function cueName(kind as Number) as String {
+        return ["sent", "speak", "error", "bye", "tap"][kind] as String;
+    }
+
     // What Start does in a call.
     const PRESS_NONE = 0;
     // after a stop for good: try again
