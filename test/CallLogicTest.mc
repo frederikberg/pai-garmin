@@ -70,3 +70,21 @@ function whatARunKeptLeadsTheNextRunsLogOnce(logger as Logger) as Boolean {
     var nothing = Trace.lines.size() == 0;
     return order && once && nothing;
 }
+
+(:test)
+function eachPressNamesItsBuzz(logger as Logger) as Boolean {
+    // what Start does, by the state it meets
+    var none = CallLogic.pressAction(true, true, true, true, true) == CallLogic.PRESS_NONE;
+    var retry = CallLogic.pressAction(false, true, false, false, false) == CallLogic.PRESS_RETRY;
+    var send = CallLogic.pressAction(false, false, true, true, false) == CallLogic.PRESS_SEND;
+    var cut = CallLogic.pressAction(false, false, false, true, false) == CallLogic.PRESS_CUT;
+    var waits = CallLogic.pressAction(false, false, false, false, true) == CallLogic.PRESS_NONE;
+    var speak = CallLogic.pressAction(false, false, false, false, false) == CallLogic.PRESS_SPEAK;
+    // and the buzz each one gives: the send's own, the tap for the rest
+    var cues = CallLogic.pressCue(CallLogic.PRESS_SEND) == CallLogic.CUE_SENT && CallLogic.pressCue(CallLogic.PRESS_CUT) == CallLogic.CUE_TAKEN
+        && CallLogic.pressCue(CallLogic.PRESS_SPEAK) == CallLogic.CUE_TAKEN && CallLogic.pressCue(CallLogic.PRESS_RETRY) == CallLogic.CUE_TAKEN;
+    // the tap is one buzz, well under the length of "speak"
+    var tap = CallLogic.buzz(CallLogic.CUE_TAKEN);
+    var distinct = tap.size() == 1 && tap[0][1] * 2 < CallLogic.buzz(CallLogic.CUE_YOUR_TURN)[0][1];
+    return none && retry && send && cut && waits && speak && cues && distinct;
+}

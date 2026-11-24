@@ -35,9 +35,11 @@ module CallLogic {
     const CUE_YOUR_TURN = 1;
     const CUE_ERROR = 2;
     const CUE_BYE = 3;
+    const CUE_TAKEN = 4;
     // How the watch buzzes for a signal, as [strength 0-100, length in ms] with strength 0 a pause.
-    // "Speak" (the microphone delivers) is one short buzz, "sent" two short ones, an error one long,
-    // and a call the watch ended by itself two short ones and a longer one.
+    // "Speak" (the microphone delivers) is one short buzz, "sent" two short ones, "taken" (a press
+    // whose result comes later) one tap, much shorter than "speak", "bye" (the call is over) two short
+    // ones and a longer one, and an error one long buzz.
     function buzz(kind as Number) as Array<Array<Number>> {
         if (kind == CUE_YOUR_TURN) {
             return [[100, 120]];
@@ -45,8 +47,45 @@ module CallLogic {
             return [[100, 70], [0, 90], [100, 70]];
         } else if (kind == CUE_BYE) {
             return [[100, 70], [0, 90], [100, 70], [0, 90], [100, 300]];
+        } else if (kind == CUE_TAKEN) {
+            return [[100, 40]];
         }
         return [[100, 700]];
+    }
+
+    // What Start does in a call.
+    const PRESS_NONE = 0;
+    // after a stop for good: try again
+    const PRESS_RETRY = 1;
+    // end the turn being recorded and send it
+    const PRESS_SEND = 2;
+    // cut the answer and record the next turn
+    const PRESS_CUT = 3;
+    // begin a turn that did not begin by itself (a session's call, after "heard nothing")
+    const PRESS_SPEAK = 4;
+
+    // blocked: the call is hanging up, ending, broken for good or on its way back to Computer;
+    // answering: an answer is awaited or plays; sending: the press of the last turn is on its way.
+    function pressAction(blocked as Boolean, stalled as Boolean, recording as Boolean, answering as Boolean,
+            sending as Boolean) as Number {
+        if (blocked) {
+            return PRESS_NONE;
+        } else if (stalled) {
+            return PRESS_RETRY;
+        } else if (recording) {
+            return PRESS_SEND;
+        } else if (answering) {
+            return PRESS_CUT;
+        } else if (sending) {
+            return PRESS_NONE;
+        }
+        return PRESS_SPEAK;
+    }
+
+    // The buzz that confirms a press Start took: the send's two short buzzes, which come once the
+    // microphone has stopped, and the tap for the rest, at once.
+    function pressCue(action as Number) as Number {
+        return action == PRESS_SEND ? CUE_SENT : CUE_TAKEN;
     }
 }
 
@@ -70,6 +109,8 @@ module Trace {
     var active as Boolean = false;
     // the app's uptime clock when it started
     var bornAt as Number = 0;
+    // why the app ends: "back" (Back on the menu) or "system" (anything else)
+    var exitCause as String = "system";
 
     function add(ev as String, fields as Dictionary?) as Void {
         var line = {"t" => System.getTimer(), "ev" => ev} as Dictionary<String, Object>;

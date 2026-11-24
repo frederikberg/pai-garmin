@@ -11,11 +11,4 @@
     <setting propertyKey="@Properties.micFilter" title="@Strings.MicFilterTitle" prompt="@Strings.MicFilterPrompt">
         <settingConfig type="boolean" />
     </setting>
-    <setting propertyKey="@Properties.openWith" title="@Strings.OpenWithTitle" prompt="@Strings.OpenWithPrompt">
-        <settingConfig type="list">
-            <listEntry value="0">@Strings.OpenWithAuto</listEntry>
-            <listEntry value="1">@Strings.OpenWithComputer</listEntry>
-            <listEntry value="2">@Strings.OpenWithMenu</listEntry>
-        </settingConfig>
-    </setting>
 </settings>

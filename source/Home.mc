@@ -1,8 +1,9 @@
 import Toybox.Lang;
 import Toybox.WatchUi;
 
-// The menu of sub-apps, the first screen. Computer comes first and is the focused entry, where the
-// watch has audio. It needs no request: nothing goes to the server until a sub-app is chosen.
+// The menu of sub-apps, the first screen however the app is opened, and the one a hang-up returns
+// to. Computer comes first and is the focused entry, where the watch has audio, so one Start begins a
+// call. It needs no request: nothing goes to the server until a sub-app is chosen.
 module Home {
     function create() as [WatchUi.Menu2, WatchUi.Menu2InputDelegate] {
         var menu = new WatchUi.Menu2({:title => "PAI"});
@@ -22,7 +23,7 @@ class HomeDelegate extends WatchUi.Menu2InputDelegate {
 
     function onSelect(item as WatchUi.MenuItem) as Void {
         if (item.getId() == :computer) {
-            var computer = new ComputerView(false);
+            var computer = new ComputerView();
             WatchUi.pushView(computer, new ComputerDelegate(computer), WatchUi.SLIDE_LEFT);
         } else if (item.getId() == :weather) {
             var view = new WeatherView();
@@ -31,5 +32,11 @@ class HomeDelegate extends WatchUi.Menu2InputDelegate {
             var list = new AlarmListView();
             WatchUi.pushView(list, new AlarmListDelegate(list), WatchUi.SLIDE_LEFT);
         }
+    }
+
+    // Back on the menu ends the app: the log says it was his.
+    function onBack() as Void {
+        Trace.exitCause = "back";
+        Menu2InputDelegate.onBack();
     }
 }

@@ -6,9 +6,9 @@ import Toybox.System;
 import Toybox.WatchUi;
 
 // The Computer screen: opening it starts a call. The watch records each turn by itself, Start sends
-// it, or cuts the answer and records again; Up and Down are the volume, Back hangs up. The screen
-// shows what the call is doing as one word in a ring of the state's colour (CallScreen), and is
-// drawn again only when that picture changes.
+// it, or cuts the answer and records again; Up and Down are the volume, Back hangs up and returns to
+// the menu, as does the end of the call by the server. The screen shows what the call is doing as one
+// word in a ring of the state's colour (CallScreen), and is drawn again only when that picture changes.
 // Toybox.Audio exists on some products only; the menu offers this screen where it does (Home), and
 // the checker skips the class so the other products build.
 (:typecheck(false))
@@ -27,15 +27,11 @@ class ComputerView extends WatchUi.View {
     private var _volume as Number = START_VOLUME;
     // the screen has been left some way other than the end of the hang-up
     private var _left as Boolean = false;
-    // the app opened straight into this screen: leaving it ends the app
-    private var _root as Boolean;
-    private var _toMenu as Boolean = false;
     // the key of the face on screen
     private var _shown as String = "";
 
-    function initialize(root as Boolean) {
+    function initialize() {
         View.initialize();
-        _root = root;
         var t0 = System.getTimer();
         var saved = Storage.getValue(VOLUME_KEY);
         if (saved instanceof Number && saved >= 0 && saved <= 100) {
@@ -61,7 +57,7 @@ class ComputerView extends WatchUi.View {
     // Back from something that covered the screen (the hang-up had ended the call): a new call.
     function onShow() as Void {
         _keepCall = false;
-        if (_client.closed() && !_toMenu) {
+        if (_client.closed()) {
             _volume = _speaker.volume();
             _left = false;
             _client = build();
@@ -97,21 +93,6 @@ class ComputerView extends WatchUi.View {
         _client.reconnect();
     }
 
-    // Opened straight into this screen, the menu is reached from here.
-    function isRoot() as Boolean {
-        return _root;
-    }
-
-    // The call is hung up and the menu takes the place of this screen.
-    function toMenu() as Void {
-        _toMenu = true;
-        _client.hangUp();
-    }
-
-    function wantsMenu() as Boolean {
-        return _toMenu;
-    }
-
     function louder() as Void {
         setVolume(_speaker.volume() + VOLUME_STEP);
     }
@@ -126,10 +107,10 @@ class ComputerView extends WatchUi.View {
         _client.say("Volume " + _speaker.volume());
     }
 
-    // Back: the hang-up goes to the server first, then the screen leaves; a second Back leaves at once.
-    // In a session's call it asks for Computer instead.
+    // Back: the bye buzz, the hang-up goes to the server, then the screen leaves for the menu; a second
+    // Back leaves at once. In a session's call it asks for Computer instead.
     function back() as Boolean {
-        if (_client.inSession() && !_client.closed()) {
+        if (_client.inSession() && !_client.closed() && !_client.ending()) {
             // in a session's call Back returns to Computer; the call goes on
             _client.back();
             return true;
@@ -138,12 +119,12 @@ class ComputerView extends WatchUi.View {
             _left = true;
             return false;
         }
-        _client.hangUp();
+        _client.bye();
         WatchUi.requestUpdate();
         return true;
     }
 
-    // The hang-up is over.
+    // The hang-up is over: the menu shows again.
     // Only if the screen is still the one on top: a second Back or an alarm may have left it already.
     function leave() as Void {
         if (!_left) {
@@ -207,12 +188,13 @@ class ComputerView extends WatchUi.View {
         dc.setPenWidth(RING);
         dc.drawCircle(w / 2, h / 2, (w < h ? w : h) / 2 - RING / 2);
         dc.setPenWidth(1);
-        Draw.title(dc, face.title);
+        // nothing near the top edge: the watch draws its own microphone sign there while it records
         dc.setColor(face.color, Graphics.COLOR_TRANSPARENT);
-        var text = face.body.length() > 0;
+        var lower = face.body.length() > 0 ? face.body : face.who;
+        var text = lower.length() > 0;
         Draw.fitted(dc, text ? 32 : 45, face.headline, [Graphics.FONT_LARGE, Graphics.FONT_MEDIUM, Graphics.FONT_SMALL]);
         if (text) {
-            Draw.paragraph(dc, face.body, 44, 76);
+            Draw.paragraph(dc, lower, 44, 76);
         }
         if (face.foot.length() > 0) {
             dc.setColor(Graphics.COLOR_ORANGE, Graphics.COLOR_TRANSPARENT);
@@ -252,13 +234,10 @@ class ComputerDelegate extends WatchUi.BehaviorDelegate {
         return true;
     }
 
-    // The Up hold: a fresh start for the call, and the way to the menu when the app opened here.
+    // The Up hold: a fresh start for the call.
     function onMenu() as Boolean {
         var menu = new WatchUi.Menu2({:title => "Computer"});
         menu.addItem(new WatchUi.MenuItem("New call", null, :reconnect, null));
-        if (_view.isRoot()) {
-            menu.addItem(new WatchUi.MenuItem("Menu", "Weather, Alarm", :menu, null));
-        }
         _view.keepCallWhileMenu();
         WatchUi.pushView(menu, new ComputerMenuDelegate(_view), WatchUi.SLIDE_LEFT);
         return true;
@@ -278,11 +257,7 @@ class ComputerMenuDelegate extends WatchUi.Menu2InputDelegate {
     }
 
     function onSelect(item as WatchUi.MenuItem) as Void {
-        if (item.getId() == :menu) {
-            _view.toMenu();
-        } else {
-            _view.reconnect();
-        }
+        _view.reconnect();
         WatchUi.popView(WatchUi.SLIDE_RIGHT);
     }
 }

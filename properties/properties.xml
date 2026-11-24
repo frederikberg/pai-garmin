@@ -3,5 +3,4 @@
     <property id="watchKey" type="string"></property>
     <property id="debugLog" type="boolean">true</property>
     <property id="micFilter" type="boolean">false</property>
-    <property id="openWith" type="number">0</property>
 </properties>
