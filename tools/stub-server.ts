@@ -16,6 +16,12 @@
 // through Garmin's image service, which cannot reach a local server.
 // Switch it on GET /__stub/weather?name=<weather scenario>.
 //
+// The answer's conditions block (symbol, temperatures, UV, four days) has a second switch beside it,
+// CONDITIONS (default showers_day): showers_day, sunny_day, clear_night (frost, UV 0 all night),
+// snow, down (the block says source_unavailable). Both switches combine freely; the no_location
+// weather scenario forces the block's no_location. GET /__stub/conditions?name=<name> switches it
+// on a running stub.
+//
 // The Computer call (/api/watch/voice/call...) is simulated: opening it queues the state; the audio of
 // a turn must arrive with consecutive seq numbers (a gap answers 409); the press that ends a turn (on
 // the last audio request as end=, or as a command) makes the stub "think", then answer with three
@@ -54,6 +60,8 @@ let weather = process.env.WEATHER ?? 'rain_soon'
 type Half = Record<string, unknown>
 const iso = (minutes: number) => new Date(Date.now() + minutes * 60000).toISOString()
 const downHalf = (reason: string): Half => ({ chance: null, verdict: 'unknown', reason })
+// An unknown later half has no hours, like the server's.
+const downLater = (reason: string): Half => ({ ...downHalf(reason), hours: [], heaviest_at: null, total_mm: null })
 const pictureToken = 'stub-picture'
 
 // Twelve hours from the current one, the chance and amount following one shower peaking at hour peak.
@@ -65,6 +73,50 @@ function hours(peak: number, mm: number) {
     const intensity = amount >= 4 ? 'heavy' : amount >= 1 ? 'moderate' : amount >= 0.1 ? 'light' : 'none'
     return { start: new Date(first + i * 3600000).toISOString(), chance: Math.round(10 + 90 * share), precipitation_mm: amount, intensity }
   })
+}
+
+let conditions = process.env.CONDITIONS ?? 'showers_day'
+// The conditions block per scenario: [symbol, night, temperatures of the 12 hours, hourly symbols,
+// hourly UV, the four days as [symbol, max, min, chance]].
+const CONDITIONS: Record<string, { symbol: string; night: boolean; temps: number[]; symbols: string[]; uv: number[]; days: [string, number, number, number][] }> = {
+  showers_day: { symbol: 'rain', night: false, temps: [11, 12, 13, 14, 14, 13, 12, 11, 10, 9, 9, 8],
+    symbols: ['partly', 'partly', 'cloudy', 'rain', 'rain', 'rain', 'rain', 'cloudy', 'cloudy', 'partly', 'clear', 'clear'],
+    uv: [1.2, 2.4, 3.6, 4.1, 3.2, 2.0, 1.1, 0.4, 0, 0, 0, 0],
+    days: [['rain', 14, 8, 90], ['partly', 16, 7, 20], ['clear', 19, 9, 0], ['thunder', 22, 12, 65]] },
+  sunny_day: { symbol: 'clear', night: false, temps: [18, 20, 22, 24, 26, 27, 27, 26, 24, 22, 20, 19],
+    symbols: ['clear', 'clear', 'clear', 'clear', 'clear', 'partly', 'partly', 'clear', 'clear', 'clear', 'clear', 'clear'],
+    uv: [2.1, 3.8, 5.6, 7.2, 8.1, 7.4, 5.9, 4.0, 2.2, 0.8, 0.1, 0],
+    days: [['clear', 27, 15, 0], ['clear', 29, 16, 5], ['partly', 28, 17, 15], ['rain', 21, 14, 80]] },
+  clear_night: { symbol: 'partly', night: true, temps: [1, 1, 0, 0, 0, 0, -1, -1, -1, -1, -1, -1],
+    symbols: ['clear', 'clear', 'clear', 'partly', 'partly', 'cloudy', 'cloudy', 'cloudy', 'clear', 'partly', 'cloudy', 'cloudy'],
+    uv: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    days: [['cloudy', 5, -3, 0], ['partly', 4, -1, 10], ['fog', 0, -4, 0], ['clear', 0, -5, 0]] },
+  snow: { symbol: 'snow', night: false, temps: [-1, -1, 0, 0, 1, 1, 0, -1, -2, -3, -4, -4],
+    symbols: ['cloudy', 'snow', 'snow', 'snow', 'sleet', 'sleet', 'snow', 'snow', 'cloudy', 'cloudy', 'clear', 'clear'],
+    uv: [0.3, 0.6, 0.9, 1.0, 0.8, 0.4, 0.1, 0, 0, 0, 0, 0],
+    days: [['snow', 1, -4, 85], ['sleet', 2, -1, 70], ['cloudy', 3, 0, 30], ['fog', 2, -2, 10]] },
+}
+// The local calendar date i days from today, as YYYY-MM-DD.
+function localDate(i: number) {
+  const d = new Date()
+  d.setDate(d.getDate() + i)
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+function conditionsAnswer(name: string) {
+  const c = CONDITIONS[name]
+  if (!c) {
+    return { reason: name === 'no_location' ? 'no_location' : 'source_unavailable', symbol: null, night: false,
+      temp_now: null, temp_min: null, temp_max: null, hours: [], uv: null, days: [] }
+  }
+  const first = Math.floor(Date.now() / 3600000) * 3600000
+  const peak = Math.max(...c.uv)
+  return {
+    reason: null, symbol: c.symbol, night: c.night, temp_now: c.temps[0],
+    temp_min: Math.min(...c.temps), temp_max: Math.max(...c.temps),
+    hours: c.temps.map((temp, i) => ({ start: new Date(first + i * 3600000).toISOString(), temp, symbol: c.symbols[i], night: c.night, uv: c.uv[i] })),
+    uv: { now: c.uv[0], peak, peak_at: peak >= 0.5 ? new Date(first + c.uv.indexOf(peak) * 3600000).toISOString() : null },
+    days: c.days.map(([symbol, temp_max, temp_min, chance], i) => ({ date: localDate(i), symbol, temp_max, temp_min, chance })),
+  }
 }
 
 // The contract's answer for the weather scenario, with times relative to now.
@@ -93,21 +145,22 @@ function weatherAnswer(name: string) {
     picture = false
     location = { ...location, place: 'Lisbon', recorded_at: iso(-60 * 5) }
   } else if (name === 'later_down') {
-    Object.assign(later, downHalf('source_unavailable'))
+    Object.assign(later, downLater('source_unavailable'))
   } else if (name === 'no_location') {
     location = null
     picture = false
     Object.assign(now, downHalf('no_location'))
-    Object.assign(later, downHalf('no_location'))
+    Object.assign(later, downLater('no_location'))
   } else if (name === 'source_down') {
     Object.assign(now, downHalf('source_unavailable'))
-    Object.assign(later, downHalf('source_unavailable'))
+    Object.assign(later, downLater('source_unavailable'))
   }
   return {
     location, computed_at: iso(0), now, later,
     radar_picture_at: picture ? iso(30) : null,
     radar_picture_path: picture ? `/api/radar-link.png?t=${pictureToken}` : null,
     attribution: 'Radar: DWD · Forecast: Open-Meteo',
+    conditions: conditionsAnswer(location === null ? 'no_location' : conditions),
   }
 }
 
@@ -459,6 +512,10 @@ Bun.serve({
     if (path === '/__stub/call-owner') {
       ownerOnly = url.searchParams.get('on') === '1'
       return json({ ownerOnly })
+    }
+    if (path === '/__stub/conditions') {
+      conditions = url.searchParams.get('name') ?? 'showers_day'
+      return json({ conditions })
     }
     if (path === '/__stub/weather') {
       weather = url.searchParams.get('name') ?? 'rain_soon'

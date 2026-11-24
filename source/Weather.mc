@@ -96,6 +96,9 @@ class WeatherState {
     // the radar picture: a link that works for a few minutes without the key, and when its frame is
     var picturePath as String?;
     var pictureAt as Time.Moment?;
+    var conditions as Conditions = new Conditions();
+    // when this answer reached the watch
+    var arrivedAt as Time.Moment = Time.now();
 
     function initialize(now as NowOutlook, later as LaterOutlook, located as Boolean, place as String?, recordedAt as Time.Moment?) {
         self.now = now;
@@ -128,6 +131,7 @@ class WeatherState {
         var state = new WeatherState(nowOutlook, laterOutlook, location instanceof Dictionary, place, recordedAt);
         state.picturePath = text(data["radar_picture_path"] as Object?);
         state.pictureAt = moment(data["radar_picture_at"] as Object?);
+        state.conditions = Conditions.fromData(data["conditions"] as Object?);
         return state;
     }
 
@@ -188,8 +192,57 @@ class WeatherState {
     }
 }
 
+// Which pages the weather screen has for an answer, in the order Down walks them.
+module WeatherPages {
+    enum {
+        ROWS,
+        HOURS,
+        TEMP,
+        UV,
+        DAYS,
+        RADAR
+    }
+
+    // A page exists only when the answer holds what it shows; a whole-screen problem leaves the rows alone.
+    function list(state as WeatherState) as Array<Number> {
+        var pages = [ROWS] as Array<Number>;
+        if (WeatherText.problem(state) != null) {
+            return pages;
+        }
+        var c = state.conditions;
+        if (state.later.known()) {
+            pages.add(HOURS);
+        }
+        if (c.known()) {
+            pages.add(TEMP);
+            if (c.uvNow != null) {
+                pages.add(UV);
+            }
+            if (c.days.size() > 0) {
+                pages.add(DAYS);
+            }
+        }
+        if (state.picturePath != null) {
+            pages.add(RADAR);
+        }
+        return pages;
+    }
+}
+
 // The words of the weather screen, apart from its drawing.
 module WeatherText {
+    // A failed refresh keeps the answer on screen while it is younger than this.
+    const KEEP_S = 1800;
+
+    function keepsAfterFailure(arrivedAt as Time.Moment, nowMoment as Time.Moment) as Boolean {
+        return nowMoment.value() - arrivedAt.value() < KEEP_S;
+    }
+
+    // The bottom line of every page while a kept answer is out of date.
+    function staleNote(arrivedAt as Time.Moment) as String {
+        return "not updated · " + AlarmTime.hhmm(arrivedAt);
+    }
+
     // "Now 70 % · 15:20": the chance, and when the rain starts if it is not already raining.
     function nowLine(now as NowOutlook) as String {
         var line = "Now " + chance(now);
@@ -269,7 +322,7 @@ module WeatherText {
 
     // What the whole screen says when neither half has an answer; null when at least one does.
     function problem(state as WeatherState) as String? {
-        if (state.now.known() || state.later.known()) {
+        if (state.now.known() || state.later.known() || state.conditions.known()) {
             return null;
         }
         if (!state.located || "no_location".equals(state.now.reason) || "no_location".equals(state.later.reason)) {
