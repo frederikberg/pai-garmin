@@ -136,6 +136,7 @@ class ComputerView extends WatchUi.View {
     // A signal. The turn signals are buzzes only: no sound plays while the microphone runs. The error
     // adds the system's error tone, since the microphone is off then.
     function cue(kind as Number) as Boolean {
+        Trace.add("buzz", {"cue" => CallLogic.cueName(kind)});
         if (Attention has :vibrate) {
             var pattern = CallLogic.buzz(kind);
             var profile = [] as Array<Attention.VibeProfile>;

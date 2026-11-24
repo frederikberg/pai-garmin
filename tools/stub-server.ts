@@ -16,10 +16,15 @@
 // through Garmin's image service, which cannot reach a local server.
 // Switch it on GET /__stub/weather?name=<weather scenario>.
 //
-// The Computer call (/api/watch/voice/call...) is simulated: opening it queues the state and one ready
-// piece; the audio of a turn must arrive with consecutive seq numbers (a gap answers 409); the press
-// that ends a turn makes the stub "think", then answer with three pieces and sentences; a press during
-// an answer clears it. Every watch log line is printed. Faults for the next N call requests, on
+// The Computer call (/api/watch/voice/call...) is simulated: opening it queues the state; the audio of
+// a turn must arrive with consecutive seq numbers (a gap answers 409); the press that ends a turn (on
+// the last audio request as end=, or as a command) makes the stub "think", then answer with three
+// pieces, each with its sentence; a press during an answer clears it. played=<n> on the events or a
+// piece request reports a piece as played, and a piece asked for with wait=<s> is waited for. A turn
+// the watch records (listening, or a session's recording) that sees no press for IDLE_S seconds
+// (default 180; GET /__stub/call-idle?s=<s>) ends the call with ended idle; the stub transcribes
+// nothing, so it counts from the turn's start. Every watch log line is printed, and GET
+// /__stub/call-log says how many came and whether one was log_dropped. Faults for the next N call requests, on
 // GET /__stub/call-fail?mode=<503|503after|hang>&count=<N>[&path=<substring>][&ms=<hang ms>]
 // (503after handles the request, then answers 503, so the watch repeats a request the server already
 // has); GET /__stub/call-expire forgets every call, so the watch gets 404 and opens a new one;
@@ -27,12 +32,9 @@
 // GET /__stub/call-notice?code=<code>&text=<text> sends a notice event to every call;
 // GET /__stub/call-think?ms=<ms> sets how long it thinks before speaking; GET /__stub/call-end?reason=<text> ends every call; GET /__stub/call-owner?on=1 answers the open with 403 owner_only.
 //
-// The optional features of the call (docs/api.md, "Optional features") are on by default: FEATURES=none,
-// or GET /__stub/call-features?on=<0|1> for calls opened afterwards, makes the stub a server without them.
 // GET /__stub/call-session?title=<title>&phase=<wake|recording> hands every call to a session's call
-// (a press there sends the turn and the answer follows in the wake phase); a back command, or
-// GET /__stub/call-session?off=1, gives it back to Computer. A no_speech notice is sent with
-// GET /__stub/call-notice?code=no_speech.
+// (a press there sends the turn and the session's answer, a piece without a sentence, follows in the
+// wake phase); a back command, or GET /__stub/call-session?off=1, gives it back to Computer.
 const port = Number(process.env.PORT ?? 8099)
 const key = process.env.WATCH_KEY ?? 'stub-key'
 let scenario = process.env.SCENARIO ?? 'alarms'
@@ -109,6 +111,12 @@ function weatherAnswer(name: string) {
 // Ogg Opus tone files (24 kHz mono, 1.5 s each) standing in for the server's pieces
 const pieceFiles = [440, 550, 660].map((hz) => Bun.file(new URL(`./stub-pieces/tone${hz}.opus`, import.meta.url)))
 const PIECE_MS = 1500
+// the sentences of Computer's answer, one a piece
+const SENTENCES = [
+  'Rain reaches Aachen around ten tonight and stays until the early morning hours.',
+  'Tomorrow stays dry after two.',
+  'Take the rain jacket for the ride home.',
+]
 
 type CallEvent = Record<string, unknown> & { i: number }
 type Call = {
@@ -127,17 +135,17 @@ type Call = {
   played: Set<number>
   generation: number
   timers: ReturnType<typeof setTimeout>[]
-  features: boolean
+  idle: ReturnType<typeof setTimeout> | null
   owner: string
   session: string | null
   backs: Set<number>
 }
-const FEATURES = ['end_on_audio', 'played_param', 'piece_wait', 'no_speech', 'short_first_piece', 'session_mode']
-let featuresOn = (process.env.FEATURES ?? 'all') !== 'none'
 const calls = new Map<string, Call>()
 let ownerOnly = false
 // how long the stub "thinks" before it speaks; GET /__stub/call-think?ms=<ms>
 let thinkMs = 900
+let idleS = Number(process.env.IDLE_S ?? 180)
+let logDropped = 0
 let fail: { mode: string; count: number; path: string; ms: number } = { mode: '', count: 0, path: '', ms: 0 }
 let logLines = 0
 
@@ -150,12 +158,24 @@ function emit(call: Call, event: Record<string, unknown>) {
 function setState(call: Call, state: string) {
   call.state = state
   emit(call, { state, owner: call.owner, session: call.session })
+  // a turn the watch records ends the call when no press comes for idleS
+  if (call.idle) clearTimeout(call.idle)
+  call.idle = null
+  if (state === 'listening' || state === 'recording') {
+    call.idle = setTimeout(() => {
+      console.log(`  idle for ${idleS} s: ended`)
+      call.ended = true
+      emit(call, { ended: 'idle' })
+    }, idleS * 1000)
+  }
 }
 // A press: in a session's call it sends the turn; with Computer it ends the turn or cuts the answer.
 function applyPress(call: Call, press: number, turn: number) {
   console.log(`  press ${press} for turn ${turn} in state ${call.state}`)
   if (call.presses.has(press)) return
   call.presses.add(press)
+  if (call.idle) clearTimeout(call.idle)
+  call.idle = null
   call.pressApplied = Math.max(call.pressApplied, press)
   const unheard = [...call.pieces.keys()].some((n) => !call.played.has(n))
   if (call.state === 'generating' || call.state === 'speaking' || unheard) {
@@ -168,15 +188,16 @@ function applyPress(call: Call, press: number, turn: number) {
   } else if (call.owner === 'session') {
     emit(call, { heard: `Sent to ${call.session}.` })
     setState(call, 'wake')
-    later(call, thinkMs, () => void addPiece(call, 0))
+    later(call, thinkMs, () => void addPiece(call, 0, false))
   } else {
     answer(call)
   }
 }
-async function addPiece(call: Call, k: number) {
+// Computer's pieces carry their sentence, a session's do not.
+async function addPiece(call: Call, k: number, sentence: boolean) {
   const n = call.nextPiece++
   call.pieces.set(n, new Uint8Array(await pieceFiles[k % pieceFiles.length].arrayBuffer()))
-  emit(call, { piece: n, ref: `r${n}`, ms: PIECE_MS })
+  emit(call, sentence ? { piece: n, ref: `r${n}`, ms: PIECE_MS, text: SENTENCES[k % SENTENCES.length] } : { piece: n, ref: `r${n}`, ms: PIECE_MS })
 }
 function later(call: Call, ms: number, fn: () => void) {
   const generation = call.generation
@@ -187,7 +208,7 @@ function answer(call: Call) {
   setState(call, 'generating')
   later(call, thinkMs, () => {
     setState(call, 'speaking')
-    for (let k = 0; k < 3; k++) later(call, 300 + k * 500, () => void addPiece(call, k))
+    for (let k = 0; k < 3; k++) later(call, 300 + k * 500, () => void addPiece(call, k, true))
     later(call, 300 + 3 * 500 + 200, () => setState(call, 'listening'))
   })
 }
@@ -200,8 +221,8 @@ function toComputer(call: Call) {
 function openCall(): Call {
   const call: Call = {
     id: crypto.randomUUID(), events: [], waiters: [], expected: new Map(), bytes: 0, chunks: 0, presses: new Set(), pressApplied: 0, ended: false,
-    state: 'ready', pieces: new Map(), nextPiece: 0, played: new Set(), generation: 0, timers: [],
-    features: false, owner: 'computer', session: null, backs: new Set(),
+    state: 'ready', pieces: new Map(), nextPiece: 0, played: new Set(), generation: 0, timers: [], idle: null,
+    owner: 'computer', session: null, backs: new Set(),
   }
   calls.set(call.id, call)
   setState(call, 'ready')
@@ -211,6 +232,7 @@ function openCall(): Call {
 function dropCall(call: Call) {
   call.generation++
   call.timers.forEach(clearTimeout)
+  if (call.idle) clearTimeout(call.idle)
   calls.delete(call.id)
 }
 
@@ -236,11 +258,8 @@ async function callRoute(req: Request, url: URL, path: string): Promise<Response
 async function callRoute2(req: Request, url: URL, sub: string): Promise<Response> {
   if (sub === '' && req.method === 'POST') {
     if (ownerOnly) return json({ detail: 'owner_only' }, 403)
-    // a server with the features turns them on for a watch that names any, and lists what it offers
-    const asked = ((await req.json().catch(() => ({}))) as { features?: unknown }).features
     const call = openCall()
-    call.features = featuresOn && Array.isArray(asked) && asked.length > 0
-    return json(featuresOn ? { call: call.id, features: FEATURES } : { call: call.id }, 201)
+    return json({ call: call.id }, 201)
   }
   const m = sub.match(/^\/([^/]+)(\/.*)?$/)
   if (!m) return json({ detail: 'not found' }, 404)
@@ -271,7 +290,7 @@ async function callRoute2(req: Request, url: URL, sub: string): Promise<Response
     }
     // the press that ends the turn may ride on its last chunk
     const end = Number(url.searchParams.get('end') ?? 0)
-    if (call.features && end > 0) applyPress(call, end, turn)
+    if (end > 0) applyPress(call, end, turn)
     return json({ next_seq: call.expected.get(turn) })
   }
   if (rest === '/command' && req.method === 'POST') {
@@ -288,7 +307,7 @@ async function callRoute2(req: Request, url: URL, sub: string): Promise<Response
     return json({})
   }
   const played = url.searchParams.get('played')
-  if (call.features && played !== null && (rest === '/events' || rest.startsWith('/piece/'))) {
+  if (played !== null && (rest === '/events' || rest.startsWith('/piece/'))) {
     console.log(`  played ${played} (on ${rest})`)
     call.played.add(Number(played))
   }
@@ -311,23 +330,18 @@ async function callRoute2(req: Request, url: URL, sub: string): Promise<Response
   const piece = rest.match(/^\/piece\/(\d+)$/)
   if (piece && req.method === 'GET') {
     const n = Number(piece[1])
-    const wait = call.features ? Math.min(Number(url.searchParams.get('wait') ?? 0), 15) : 0
+    const wait = Math.min(Number(url.searchParams.get('wait') ?? 0), 15)
     for (let waited = 0; !call.pieces.has(n) && waited < wait * 1000; waited += 50) await new Promise((r) => setTimeout(r, 50))
     if (wait > 0 && !call.pieces.has(n)) return new Response(null, { status: 204 })
     const data = call.pieces.get(n)
     if (!data || call.played.has(n)) return json({ detail: 'gone' }, 404)
     return new Response(data, { headers: { 'content-type': 'application/octet-stream' } })
   }
-  if (rest === '/played' && req.method === 'POST') {
-    const body = (await req.json().catch(() => ({}))) as { n?: number }
-    console.log(`  played ${body.n}`)
-    if (typeof body.n === 'number') call.played.add(body.n)
-    return json({})
-  }
   if (rest === '/log' && req.method === 'POST') {
     const body = (await req.json().catch(() => ({}))) as { lines?: unknown[] }
     for (const line of body.lines ?? []) {
       logLines++
+      if ((line as { ev?: string }).ev === 'log_dropped') logDropped++
       console.log(`  watch log: ${JSON.stringify(line)}`)
     }
     return json({})
@@ -411,9 +425,12 @@ Bun.serve({
       calls.forEach((call) => emit(call, { notice }))
       return json({ notice })
     }
-    if (path === '/__stub/call-features') {
-      featuresOn = url.searchParams.get('on') !== '0'
-      return json({ featuresOn })
+    if (path === '/__stub/call-idle') {
+      idleS = Number(url.searchParams.get('s') ?? 180)
+      return json({ idleS })
+    }
+    if (path === '/__stub/call-log') {
+      return json({ lines: logLines, dropped: logDropped })
     }
     if (path === '/__stub/call-session') {
       const off = url.searchParams.get('off') === '1'
@@ -439,7 +456,11 @@ Bun.serve({
 
     if (path === '/api/watch/log' && req.method === 'POST') {
       const body = (await req.json().catch(() => ({}))) as { lines?: unknown[] }
-      for (const line of body.lines ?? []) console.log(`  watch log (no call): ${JSON.stringify(line)}`)
+      for (const line of body.lines ?? []) {
+        logLines++
+        if ((line as { ev?: string }).ev === 'log_dropped') logDropped++
+        console.log(`  watch log (no call): ${JSON.stringify(line)}`)
+      }
       return json({})
     }
     if (path.startsWith('/api/watch/voice/call')) return callRoute(req, url, path)

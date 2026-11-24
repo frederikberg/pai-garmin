@@ -1056,3 +1056,41 @@ function computersSentenceShowsWhileItsPiecePlaysAndASessionShowsOnlyItsName(log
         && none.equals("") && late.equals("Wind from the west.") && session.headline.equals("Speaking") && session.body.equals("")
         && session.who.equals("Notes");
 }
+
+(:test)
+function aCallThatEndedWhileHeSpokeEndsWithTheByeAndNoNewTurn(logger as Logger) as Boolean {
+    var env = new FakeEnv();
+    var io = new FakeIo();
+    var c = Kit.opened(env, io);
+    // the server ended the call meanwhile: its audio route answers 404 before the events say why
+    c.chunk(Kit.silence(2500));
+    var cues = io.cues.size();
+    env.reply("/audio", 404, {"detail" => "ended"});
+    var held = !c.recording && io.captures == 1 && env.onlyOpen().find("/events") != null && !c.press();
+    env.reply("/events", 200, {"cursor" => 3, "events" => [{"i" => 3, "ended" => "idle"}]});
+    return held && io.captures == 1 && io.cues.size() == cues + 1 && io.cues[cues] == CallLogic.CUE_BYE && c.closed();
+}
+
+(:test)
+function theLastPiecesPlayedReportGoesBeforeAQuickReplysPress(logger as Logger) as Boolean {
+    var env = new FakeEnv();
+    var io = new FakeIo();
+    var c = Kit.opened(env, io);
+    Kit.turnSent(env, c);
+    env.reply("/events", 200, {"cursor" => 3, "events" => [{"i" => 1, "state" => "speaking"}, {"i" => 2, "piece" => 0, "ms" => 1500}, {"i" => 3, "state" => "listening"}]});
+    env.reply("/piece/0", 200, Kit.silence(4000));
+    env.settle();
+    // the answer ends and the next turn starts at once; the report goes before his short reply's press
+    c.piecePlayed(0);
+    c.playbackIdle();
+    c.answerEnded();
+    // the poll that was out when the answer ended comes back with nothing
+    env.reply("/events", 200, {"cursor" => 3, "events" => []});
+    var report = env.paramsOf("/events");
+    var first = report != null && (report["played"] as Number?) == 0 && c.recording;
+    env.replyOnly(200, {"cursor" => 3, "events" => []});
+    c.chunk(Kit.silence(300));
+    c.press();
+    c.captureEnded();
+    return first && env.onlyOpen().find("&end=") != null;
+}

@@ -275,6 +275,8 @@ class CallClient {
     private var _backPending as Number = 0;
     // the piece the player started last
     private var _playingN as Number = -1;
+    // a route of the call answered 404: nothing records until the events say whether the call ended
+    private var _gone as Boolean = false;
     private var _micSaid as Boolean = false;
     private var _lastTick as Number = 0;
     private var _logToCall as Boolean = true;
@@ -337,7 +339,7 @@ class CallClient {
     // begin by itself, or try again after a stop. Every press it takes buzzes (CallLogic.pressCue): the
     // send when the microphone has stopped, the others at once. False when there was nothing to press for.
     function press() as Boolean {
-        var action = CallLogic.pressAction(fatal != null || _closing || _ending || _leaving, stalled != null, recording,
+        var action = CallLogic.pressAction(fatal != null || _closing || _ending || _leaving || _gone, stalled != null, recording,
             busyAnswering(), _endPending);
         if (action == CallLogic.PRESS_NONE) {
             return false;
@@ -947,7 +949,7 @@ class CallClient {
 
     private function autoRecord(now as Number) as Void {
         // Computer listens after every answer; a session's call records only in its recording phase
-        if (!_closing && !_ending && _call != null && !recording && !_endPending && !_turnSent && !_leaving
+        if (!_closing && !_ending && !_gone && _call != null && !recording && !_endPending && !_turnSent && !_leaving
                 && (engine.equals("listening") || engine.equals("recording"))
                 && !playbackActive && !moreToPlay() && now >= _autoAt && fatal == null && stalled == null
                 && !_io.busy.invoke()) {
@@ -1006,9 +1008,9 @@ class CallClient {
             }
             return;
         }
-        // One request at a time, in this order: the press, the audio, the pieces, the played reports,
-        // the log when it is due (which is rarely), the events. The events jump the queue when they
-        // have waited too long. While his turn is open nothing is expected from the server, so the
+        // One request at a time, in this order: the press, a played report with no piece left to fetch
+        // (on an events request), the audio, the pieces, the log when it is due (which is rarely), the
+        // events. The events jump the queue when they have waited too long. While his turn is open nothing is expected from the server, so the
         // events are only asked now and then, without a wait, and never hold up the audio.
         if (_commands.size() > 0 && _playedQueue.size() > 0 && now < _holdUntil && ready(EVENTS)) {
             // a press waits for the played reports before it, and those ride on an events request
@@ -1018,6 +1020,12 @@ class CallClient {
             sendCommand(call);
         }
         if (now - _lastEventsAt >= EVENTS_MAX_GAP_MS && ready(EVENTS)) {
+            sendEvents(call);
+        }
+        if (_playedQueue.size() > 0 && _pieces.size() == 0 && !_expectPiece && ready(EVENTS)) {
+            // with no piece left to fetch, on whose request it would ride, a played report goes on an
+            // events request at once, also while his turn is open (the link is idle while the microphone
+            // starts): the press that ends the turn never overtakes it
             sendEvents(call);
         }
         if (_commands.size() == 0 && audioDue() && ready(AUDIO)) {
@@ -1312,7 +1320,7 @@ class CallClient {
             Trace.add("call_gone", {"code" => code});
             newCallAfterLoss();
         } else if (code == 404) {
-            // an ended call answers its other routes with 404 while the events still say so
+            // an ended call answers its other routes with 404 while its events still say why
             Trace.add("route_gone", {"lane" => _lanes[lane].name});
             if (lane == LOG) {
                 if (_logToCall) {
@@ -1320,8 +1328,14 @@ class CallClient {
                 } else {
                     _orphanHold = true;
                 }
-            } else if (lane == AUDIO) {
-                abandonTurn("Call ended", null);
+            } else if (lane == AUDIO || lane == CMD) {
+                // no new turn until the events, asked at once, have said it
+                _gone = true;
+                stopCapture();
+                discardTurn();
+                _commands = [];
+                _turnSent = false;
+                _lastEventsAt = 0;
             } else {
                 drop(lane);
             }
@@ -1620,6 +1634,8 @@ class CallClient {
         if (cursor instanceof Number && cursor > _cursor) {
             _cursor = cursor;
         }
+        // the call answers its events and did not end: the 404 was that route's alone
+        _gone = false;
         return true;
     }
 
@@ -1775,6 +1791,7 @@ class CallClient {
         _afterPress = 0;
         _texts = {};
         _playingN = -1;
+        _gone = false;
         spoken = "";
         owner = "computer";
         sessionTitle = "";
