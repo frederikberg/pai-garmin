@@ -8,15 +8,16 @@ import Toybox.Timer;
 // The microphone: one Ogg Opus 16 kHz mono stream per turn, delivered in small windows, so the first
 // one (which says the microphone is live) comes early and a turn leaves the watch while it is spoken.
 // Toybox.Audio exists on some products only; the classes of this file are left out of the strict
-// check so the others build (the menu offers the screen where Audio exists).
+// check so the others build (the menu offers the screen where Audio exists). The stream goes to a
+// sink: any object with chunk(data), captureEnded() and captureFailed(code).
 (:typecheck(false))
 class Recorder {
     const WINDOW_BYTES = 256;
-    private var _client as CallClient;
+    private var _sink as Object;
     private var _logged as Boolean = false;
 
-    function initialize(client as CallClient) {
-        _client = client;
+    function initialize(sink as Object) {
+        _sink = sink;
     }
 
     // 0 when recording began, 1 when the watch cannot capture Ogg Opus, 2 when starting failed.
@@ -66,15 +67,15 @@ class Recorder {
     }
 
     function onData(audioData as ByteArray) as Void {
-        _client.chunk(audioData);
+        _sink.chunk(audioData);
     }
 
     function onComplete() as Void {
-        _client.captureEnded();
+        _sink.captureEnded();
     }
 
     function onError(error as Capture.Error) as Void {
-        _client.captureFailed(error);
+        _sink.captureFailed(error);
     }
 }
 
