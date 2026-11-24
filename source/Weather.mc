@@ -238,6 +238,18 @@ module WeatherText {
         return nowMoment.value() - arrivedAt.value() < KEEP_S;
     }
 
+    // Whether the answer on screen stays when a refresh brings `fresh` (null: no usable answer): a refresh that
+    // fails, or one that knows nothing at all, keeps an answer that has something to show and is young enough.
+    function keepsOver(old as WeatherState?, fresh as WeatherState?, nowMoment as Time.Moment) as Boolean {
+        if (old == null || problem(old) != null) {
+            return false;
+        }
+        if (fresh != null && problem(fresh) == null) {
+            return false;
+        }
+        return keepsAfterFailure(old.arrivedAt, nowMoment);
+    }
+
     // The bottom line of every page while a kept answer is out of date.
     function staleNote(arrivedAt as Time.Moment) as String {
         return "not updated · " + AlarmTime.hhmm(arrivedAt);

@@ -64,7 +64,7 @@ Down walks the pages, Up walks back, and both wrap, so the radar picture is one 
 - **Daily**: today and the next three days as in the watch's own daily glance: weekday, symbol, highest, lowest and the chance of rain, credited to Open-Meteo.
 - **Radar**: the rain radar half an hour ahead around you, the dot in the middle being you.
 
-A page the answer cannot fill does not exist. If the forecast is down, the first screen says *no forecast* and only the rain pages are left; if the rain is down, its row says *no answer* and the forecast pages stay. While Start asks again the last line of the page reads *Updating...*; if that fails the answer stays for up to 30 minutes with *not updated* and the time it arrived in orange, and after that the screen says what failed.
+A page the answer cannot fill does not exist. If the forecast is down, the first screen says *no forecast* and only the rain pages are left; if the rain is down, its row says *no answer* and the forecast pages stay. While Start asks again the last line of the page reads *Updating...*; if that fails, or the server answers that nothing is known, the answer stays for up to 30 minutes with *not updated* and the time it arrived in orange, and after that the screen says what failed.
 
 <p align="center">
   <img src="images/weather.png" alt="Weather: a rain symbol with 14 over 8 degrees, Now 70 % with rain 8 km west closing in, Later 100 % with the heaviest hour and 11 mm, Aachen, 12 minutes ago" width="30%">

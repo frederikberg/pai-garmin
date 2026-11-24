@@ -8,9 +8,9 @@ class HourSlot {
     var temp as Number;
     var symbol as String;
     var night as Boolean;
-    var uv as Float;
+    var uv as Float?;
 
-    function initialize(start as Time.Moment, temp as Number, symbol as String, night as Boolean, uv as Float) {
+    function initialize(start as Time.Moment, temp as Number, symbol as String, night as Boolean, uv as Float?) {
         self.start = start;
         self.temp = temp;
         self.symbol = symbol;
@@ -87,7 +87,7 @@ class Conditions {
                 var hn = h["night"] as Object?;
                 var uv = decimal(h["uv"] as Object?);
                 if (start != null && temp != null) {
-                    c.hours.add(new HourSlot(start, temp, hs instanceof String ? hs : "cloudy", hn instanceof Boolean && hn, uv == null ? 0.0 : uv));
+                    c.hours.add(new HourSlot(start, temp, hs instanceof String ? hs : "cloudy", hn instanceof Boolean && hn, uv));
                 }
             }
         }

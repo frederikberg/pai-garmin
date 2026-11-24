@@ -61,13 +61,13 @@ function aBrokenHourOrDayIsSkipped(logger as Logger) as Boolean {
 }
 
 (:test)
-function missingSymbolsReadAsCloudyAndUvAsZero(logger as Logger) as Boolean {
+function missingSymbolsReadAsCloudyAndAHourUvAsAGap(logger as Logger) as Boolean {
     var data = conditionsData();
     data["symbol"] = null;
     data["hours"] = [{"start" => "2023-11-14T22:00:00+00:00", "temp" => 4}];
     data["days"] = [{"date" => "2026-11-24", "temp_max" => 5, "temp_min" => 1}];
     var c = Conditions.fromData(data);
-    return c.symbol.equals("cloudy") && c.hours[0].symbol.equals("cloudy") && c.hours[0].uv == 0.0 && c.days[0].symbol.equals("cloudy");
+    return c.symbol.equals("cloudy") && c.hours[0].symbol.equals("cloudy") && c.hours[0].uv == null && c.days[0].symbol.equals("cloudy");
 }
 
 (:test)
@@ -183,4 +183,24 @@ function aFailedRefreshKeepsAnAnswerForThirtyMinutes(logger as Logger) as Boolea
     ok = !WeatherText.keepsAfterFailure(arrived, new Time.Moment(1700000000 + 31 * 60)) && ok;
     ok = !WeatherText.keepsAfterFailure(arrived, new Time.Moment(1700000000 + 30 * 60)) && ok;
     return ok && same(logger, WeatherText.staleNote(arrived), "not updated · " + AlarmTime.hhmm(arrived));
+}
+
+(:test)
+function aRefreshThatKnowsNothingKeepsAYoungAnswer(logger as Logger) as Boolean {
+    var good = stateWith(conditionsData());
+    var noRain = {"chance" => null, "verdict" => "unknown", "reason" => "source_unavailable"};
+    var data = weatherData(noRain, noRain, {"place" => "Aachen"});
+    data["conditions"] = {"reason" => "source_unavailable", "symbol" => null, "night" => false, "temp_now" => null, "temp_min" => null,
+        "temp_max" => null, "hours" => [], "uv" => null, "days" => []};
+    var down = WeatherState.fromData(data);
+    if (good == null || down == null) {
+        return false;
+    }
+    var arrived = good.arrivedAt.value();
+    var young = new Time.Moment(arrived + 29 * 60);
+    var old = new Time.Moment(arrived + 31 * 60);
+    var ok = WeatherText.keepsOver(good, down, young) && !WeatherText.keepsOver(good, down, old);
+    // a failed request, an answer with something to show, nothing on screen, an answer that was itself empty
+    ok = WeatherText.keepsOver(good, null, young) && !WeatherText.keepsOver(good, good, young) && ok;
+    return ok && !WeatherText.keepsOver(null, down, young) && !WeatherText.keepsOver(down, down, young);
 }

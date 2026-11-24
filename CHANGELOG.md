@@ -20,3 +20,7 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 - A home menu with Computer (where the watch has audio), Weather and Alarm that appears at once; a check for a ringing alarm runs behind it, and a sub-app's request waits for that check.
 - A glance that shows the next alarm, or that one rings.
 - Server URL and watch key as app settings in Garmin Connect.
+
+### Fixed
+
+- Weather: an answer in which the server knows nothing (every source down) no longer replaces a good answer younger than 30 minutes, which stays with *not updated · HH:MM*; an hour without a UV value is a gap on the UV page, not a bar for none.
