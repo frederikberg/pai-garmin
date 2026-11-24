@@ -35,9 +35,15 @@ module SelfReport {
         return out;
     }
 
-    // A random version 4 UUID. The generator is seeded from the clock first, so two launches differ.
+    var seeded as Boolean = false;
+
+    // A random version 4 UUID. The generator is seeded from the clock once per launch, so two
+    // launches differ and two calls within the same millisecond do not repeat each other.
     function uuid() as String {
-        Math.srand(System.getTimer() + Time.now().value());
+        if (!seeded) {
+            seeded = true;
+            Math.srand(System.getTimer() + Time.now().value());
+        }
         var hex = "0123456789abcdef";
         var out = "";
         for (var i = 0; i < 32; i++) {
