@@ -89,7 +89,7 @@ Pages, in the order Down walks them (Up walks back, both wrap); a page exists on
 | daily, four rows with weekday, symbol, highest, lowest and chance of rain, credited to Open-Meteo | `conditions` has days |
 | radar picture | `radar_picture_path` is not `null` |
 
-Start asks again on every page. While it runs the last line reads *Updating...*. When a refresh fails and the answer on screen is younger than 30 minutes, the answer stays and the last line of every page reads *not updated · HH:MM*, the time that answer arrived; an older one is dropped and the screen says what failed. Without the symbol block (`conditions` unavailable) the first page reads *no forecast* where the symbol would be. Without a location it says to pick the iPhone in the server's Settings, Location. When neither half has an answer it says so as a whole; when one half has none, that row shows a dash and `no answer`.
+Start asks again on every page. While it runs the last line reads *Updating...*. When a refresh fails, or the server answers but knows nothing at all (every source down), and the answer on screen is younger than 30 minutes, the answer stays and the last line of every page reads *not updated · HH:MM*, the time that answer arrived; an older one is dropped and the screen says what failed. Without the symbol block (`conditions` unavailable) the first page reads *no forecast* where the symbol would be. Without a location it says to pick the iPhone in the server's Settings, Location. When neither half has an answer it says so as a whole; when one half has none, that row shows a dash and `no answer`.
 
 Changing a time is a `PUT` because Connect IQ cannot send `PATCH`.
 

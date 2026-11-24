@@ -62,21 +62,15 @@ class WeatherView extends WatchUi.View {
         _updating = false;
         var data = outcome.data;
         var state = data == null ? null : WeatherState.fromData(data);
-        if (state != null) {
+        if (WeatherText.keepsOver(_state, state, Time.now())) {
+            _stale = true;
+        } else {
             _state = state;
             _stale = false;
             // the picture link belongs to one answer and expires with it
             _picture = null;
             _pictureFailed = false;
-        } else {
-            var old = _state;
-            if (old != null && WeatherText.keepsAfterFailure(old.arrivedAt, Time.now())) {
-                _stale = true;
-            } else {
-                _state = null;
-                _stale = false;
-                _picture = null;
-                _pictureFailed = false;
+            if (state == null) {
                 _message = outcome.isOk() ? "Unexpected answer" : outcome.text();
             }
         }
@@ -278,10 +272,13 @@ class WeatherView extends WatchUi.View {
         for (var i = 0; i < hours.size(); i++) {
             var hour = hours[i];
             var x = left + i * slot;
-            var uv = hour.uv > 11 ? 11.0 : hour.uv;
-            var tall = ((bottom - top) * uv / 11).toNumber();
-            dc.setColor(ConditionsText.uvWhole(hour.uv) == 0 ? Graphics.COLOR_DK_GRAY : ConditionsText.uvColor(hour.uv), Graphics.COLOR_TRANSPARENT);
-            dc.fillRectangle(x + gap / 2, bottom - (tall < 2 ? 2 : tall), slot - gap, tall < 2 ? 2 : tall);
+            var value = hour.uv;
+            if (value != null) {
+                var uv = value > 11 ? 11.0 : value;
+                var tall = ((bottom - top) * uv / 11).toNumber();
+                dc.setColor(ConditionsText.uvWhole(value) == 0 ? Graphics.COLOR_DK_GRAY : ConditionsText.uvColor(value), Graphics.COLOR_TRANSPARENT);
+                dc.fillRectangle(x + gap / 2, bottom - (tall < 2 ? 2 : tall), slot - gap, tall < 2 ? 2 : tall);
+            }
             if (i % 3 == 0) {
                 dc.setColor(Graphics.COLOR_LT_GRAY, Graphics.COLOR_TRANSPARENT);
                 dc.drawText(x + slot / 2, h * 66 / 100, Graphics.FONT_XTINY, AlarmTime.hhmm(hour.start).substring(0, 2) as String,
