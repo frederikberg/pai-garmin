@@ -49,18 +49,29 @@ If the server does not take the recording, a long buzz sounds and the screen say
 
 ## Weather
 
-Start on *Weather* asks the server once and shows two rows:
+Start on *Weather* asks the server once. The first screen shows a symbol for the next twelve hours (a moon when most of them are dark) with the highest temperature over the lowest beside it, and under that two rows:
 
 - **Now** is the chance of rain in the next hour, from the rain radar. When rain is on its way the time it reaches you follows, with a line below such as "8 km W, closing in"; "raining now, until 15:40" while it rains; "dry around you" when nothing is near. Where no radar covers the place the line says "forecast only".
 - **Later** is the chance over the next twelve hours and, if rain is likely, when it starts, with a line naming the hour it rains hardest and how much falls in all ("heaviest 21:00 · 11 mm").
 
 The colour follows the server's verdict: blue for rain, yellow for maybe, green for unlikely or dry, grey when there is no answer. The line under the rows names the place and how long ago the phone reported it. Start asks again, Back returns to the menu.
 
-Down turns to the next twelve hours as bars: each bar is as tall as the hour's chance and as dark a blue as the rain is heavy, with every third hour named below. Down again shows the rain radar half an hour ahead around you, the dot in the middle being you; Up pages back. The dots on the left edge show which page is open.
+Down walks the pages, Up walks back, and both wrap, so the radar picture is one Up from the first screen. The dots on the left edge show which page is open.
+
+- **Rain**: the next twelve hours as bars, each as tall as the hour's chance and as dark a blue as the rain is heavy, with every third hour named below.
+- **Temperature**: the same twelve hours as bars (orange, ice blue at or below 0 °C), with the symbol, hour and temperature of every third hour and the temperature now at the bottom.
+- **UV index**: the index valid now at the top, in the colour of its band (none, low, moderate, high, very high, extreme), then twelve bars on one fixed scale, so a bar means the same in July and in November, and the peak with its hour. At night it reads *UV 0 · none*.
+- **Daily**: today and the next three days as in the watch's own daily glance: weekday, symbol, highest, lowest and the chance of rain, credited to Open-Meteo.
+- **Radar**: the rain radar half an hour ahead around you, the dot in the middle being you.
+
+A page the answer cannot fill does not exist. If the forecast is down, the first screen says *no forecast* and only the rain pages are left; if the rain is down, its row says *no answer* and the forecast pages stay. While Start asks again the last line of the page reads *Updating...*; if that fails the answer stays for up to 30 minutes with *not updated* and the time it arrived in orange, and after that the screen says what failed.
 
 <p align="center">
-  <img src="images/weather.png" alt="Weather: Now 70 % with rain 8 km west closing in, Later 100 % with the heaviest hour and 11 mm, Aachen, 12 minutes ago" width="30%">
+  <img src="images/weather.png" alt="Weather: a rain symbol with 14 over 8 degrees, Now 70 % with rain 8 km west closing in, Later 100 % with the heaviest hour and 11 mm, Aachen, 12 minutes ago" width="30%">
   <img src="images/weather-hours.png" alt="Weather, next 12 hours: bars rising to a peak at 22:00, heaviest 21:00 with 11 mm" width="30%">
+  <img src="images/weather-temp.png" alt="Weather, temperature: twelve bars from 8 to 14 degrees with the symbol, hour and temperature of every third hour" width="30%">
+  <img src="images/weather-uv.png" alt="Weather, UV index: UV 1, low, with twelve small bars and the peak at 20:00" width="30%">
+  <img src="images/weather-days.png" alt="Weather, daily: four days with weekday, symbol, highest, lowest and chance of rain" width="30%">
   <img src="images/weather-unknown.png" alt="Weather without a location: pick your iPhone in PAI Settings, Location" width="30%">
 </p>
 

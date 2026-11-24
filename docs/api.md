@@ -45,7 +45,16 @@ State:
     "heaviest_at": "<time>", "total_mm": 11.2
   },
   "radar_picture_at": "<time>",
-  "radar_picture_path": "/api/radar-link.png?t=<token>"
+  "radar_picture_path": "/api/radar-link.png?t=<token>",
+  "attribution": "Radar: DWD · Forecast: Open-Meteo",
+  "conditions": {
+    "reason": null,
+    "symbol": "rain", "night": false,
+    "temp_now": 11, "temp_min": 8, "temp_max": 14,
+    "hours": [{"start": "<time>", "temp": 11, "symbol": "partly", "night": false, "uv": 1.2}],
+    "uv": {"now": 1.2, "peak": 4.1, "peak_at": "<time>"},
+    "days": [{"date": "2026-11-24", "symbol": "rain", "temp_max": 14, "temp_min": 8, "chance": 90}]
+  }
 }
 ```
 
@@ -53,7 +62,34 @@ State:
 
 `radar_picture_path` is a link to the radar picture about half an hour ahead (`radar_picture_at`), `null` where there is none. It works for a few minutes without the key, because Connect IQ downloads images without headers; the watch adds `&size=<pixels>` and fetches it with `makeImageRequest` when the picture's page opens. An expired link answers `403`, and the next refresh brings a new one.
 
-The watch shows the two halves as rows (`Now 70 % · 15:20` with a line such as `8 km W, closing in`, `raining now, until 15:40` or `dry around you`; `Later 100 % · 18:00` with `heaviest 21:00 · 11 mm`), and under them the place and how long ago the location was reported. Down shows the twelve hours as bars, Down again the radar picture. Without a location it says to pick the iPhone in the server's Settings, Location. When neither half has an answer it says so as a whole; when one half has none, that row shows a dash and `no answer`.
+`conditions` is the forecast beside the rain: the symbol and temperatures of the next twelve hours, the UV index and the days ahead. It is always present, and independent of the rain halves: when it is unavailable the rain still answers, and the other way round. A server that does not send it works too; the watch then shows the rain pages only.
+
+| Field | Meaning |
+|---|---|
+| `reason` | `null` when the block is filled; `no_location` or `source_unavailable` otherwise, with `symbol`, `temp_*` and `uv` `null`, `night` false, `hours` and `days` empty |
+| `symbol` | the next twelve hours as one of `clear`, `partly`, `cloudy`, `fog`, `rain`, `sleet`, `snow`, `thunder`; an unknown word is drawn as `cloudy` |
+| `night` | most of the twelve hours are dark; turns the sun of `clear` and `partly` into a moon |
+| `temp_now`, `temp_min`, `temp_max` | whole °C; the extremes cover the twelve hours and now |
+| `hours` | twelve entries from the current full hour: `start`, whole-°C `temp`, `symbol`, `night`, and `uv` (index over the hour, `null` when unknown); an entry without `start` or `temp` is left out |
+| `uv` | `null` without a UV source (the UV page then does not exist); `now` is the index valid at the person's location, `peak` the highest of now and the twelve hours, `peak_at` the hour it falls in (`null` when it rounds to 0) |
+| `days` | four entries, today first, by the location's calendar: `date` (`YYYY-MM-DD`; the watch derives the weekday from it), `symbol` of the day (always drawn as day), whole-°C `temp_max` and `temp_min`, and `chance` of rain 0 to 100 (`null` when unknown); an entry without a readable `date` or temperatures is left out |
+
+The watch shows the screens listed under *Pages* below; `attribution` names the sources.
+
+The watch shows the two halves as rows (`Now 70 % · 15:20` with a line such as `8 km W, closing in`, `raining now, until 15:40` or `dry around you`; `Later 100 % · 18:00` with `heaviest 21:00 · 11 mm`), and under them the place and how long ago the location was reported, below the twelve-hour symbol with the highest over the lowest temperature.
+
+Pages, in the order Down walks them (Up walks back, both wrap); a page exists only when the answer holds what it shows:
+
+| Page | Exists when |
+|---|---|
+| the rows with the symbol | always |
+| rain bars | the `later` half has an answer |
+| temperature, twelve bars with a symbol, hour and temperature every third hour | `conditions` is filled |
+| UV index, the index now and twelve bars on a fixed 0 to 11 scale | `conditions` is filled and has `uv` |
+| daily, four rows with weekday, symbol, highest, lowest and chance of rain, credited to Open-Meteo | `conditions` has days |
+| radar picture | `radar_picture_path` is not `null` |
+
+Start asks again on every page. While it runs the last line reads *Updating...*. When a refresh fails and the answer on screen is younger than 30 minutes, the answer stays and the last line of every page reads *not updated · HH:MM*, the time that answer arrived; an older one is dropped and the screen says what failed. Without the symbol block (`conditions` unavailable) the first page reads *no forecast* where the symbol would be. Without a location it says to pick the iPhone in the server's Settings, Location. When neither half has an answer it says so as a whole; when one half has none, that row shows a dash and `no answer`.
 
 Changing a time is a `PUT` because Connect IQ cannot send `PATCH`.
 
