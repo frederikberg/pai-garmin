@@ -8,9 +8,4 @@
     <string id="DebugLogPrompt">Send a detailed trace of Computer calls to the server's log (heartbeat, every request)</string>
     <string id="MicFilterTitle">Mic filter</string>
     <string id="MicFilterPrompt">Noise and echo reduction on the microphone, where the watch has it</string>
-    <string id="OpenWithTitle">Open with</string>
-    <string id="OpenWithPrompt">What the app shows when it opens, on watches with audio</string>
-    <string id="OpenWithAuto">Computer, the menu from the glance list</string>
-    <string id="OpenWithComputer">Computer</string>
-    <string id="OpenWithMenu">Menu</string>
 </strings>

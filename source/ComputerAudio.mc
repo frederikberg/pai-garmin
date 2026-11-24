@@ -180,7 +180,7 @@ class Speaker {
         _startedAt = System.getTimer();
         _timer.start(method(:onDeadline), ms + SLACK_MS, false);
         // the gap before a piece, and whether the piece before it was left waiting for this one
-        _client.noteGap(_lastEnd > 0 ? _startedAt - _lastEnd : 0, _starved);
+        _client.noteGap(n, _lastEnd > 0 ? _startedAt - _lastEnd : 0, _starved);
         Trace.debug("piece_start", {"n" => n, "bytes" => data.size(), "ms" => ms,
             "gap_ms" => _lastEnd > 0 ? _startedAt - _lastEnd : 0, "starved" => _starved, "vol" => _volume});
         _lastEnd = 0;

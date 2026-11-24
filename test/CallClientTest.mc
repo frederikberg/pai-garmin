@@ -260,11 +260,6 @@ class FakeIo {
 (:test)
 module Kit {
 function opened(env as FakeEnv, io as FakeIo) as CallClient {
-    return openedWith(env, io, null);
-}
-
-// A call on a server that offers the named features; null for one that offers none.
-function openedWith(env as FakeEnv, io as FakeIo, features as Array<String>?) as CallClient {
     Trace.lines = [];
     Trace.dropped = 0;
     Trace.reported = 0;
@@ -275,7 +270,7 @@ function openedWith(env as FakeEnv, io as FakeIo, features as Array<String>?) as
     // the microphone delivers, which lets the open go out
     c.chunk(silence(10));
     c.tick();
-    env.reply("voice/call", 201, features == null ? {"call" => "c1"} : {"call" => "c1", "features" => features});
+    env.reply("voice/call", 201, {"call" => "c1"});
     return c;
 }
 
@@ -431,27 +426,6 @@ function piecesAreFetchedBeforePlayedReports(logger as Logger) as Boolean {
 }
 
 (:test)
-function theOpenNamesTheFeaturesItWantsAndUsesOnlyWhatTheServerLists(logger as Logger) as Boolean {
-    var env = new FakeEnv();
-    var io = new FakeIo();
-    Trace.lines = [];
-    var c = new CallClient(io.io(), env);
-    io.client = c;
-    c.start();
-    c.chunk(Kit.silence(300));
-    c.tick();
-    var body = env.paramsOf("voice/call");
-    var named = body != null && (body["features"] as Array).indexOf("end_on_audio") >= 0;
-    // the server lists another feature only: the press goes as a command
-    env.reply("voice/call", 201, {"call" => "c1", "features" => ["played_param"]});
-    c.press();
-    c.captureEnded();
-    var plain = env.onlyOpen().find("end=") == null;
-    env.replyOnly(200, {});
-    return named && plain && env.onlyOpen().find("/command") != null;
-}
-
-(:test)
 function listeningBeginsBeforeTheCallExistsAndItsAudioFollows(logger as Logger) as Boolean {
     var env = new FakeEnv();
     var io = new FakeIo();
@@ -525,9 +499,11 @@ function requestsGoOneAtATimeInPriorityOrder(logger as Logger) as Boolean {
         Trace.add("x", null);
     }
     var order = [] as Array<String>;
-    for (var step = 0; step < 4; step++) {
+    for (var step = 0; step < 3; step++) {
         var url = env.onlyOpen();
-        if (url.find("/audio") != null) {
+        if (url.find("/audio") != null && url.find("&end=1") != null) {
+            order.add("audio+press");
+        } else if (url.find("/audio") != null) {
             order.add("audio");
         } else if (url.find("/command") != null) {
             order.add("command");
@@ -540,9 +516,10 @@ function requestsGoOneAtATimeInPriorityOrder(logger as Logger) as Boolean {
         }
         env.replyOnly(200, {"cursor" => 0, "events" => []});
     }
-    // the answer is waited for with the events, and the log stays behind them
-    return order[0].equals("audio") && order[1].equals("command") && order[2].equals("events") && order[3].equals("events")
-        && env.eventsWait() == 1;
+    // the press rides on the turn's audio, the answer is waited for with the events, and the log stays
+    // behind them
+    return order[0].equals("audio+press") && order[1].equals("events") && order[2].equals("events")
+        && env.eventsWait() == 1 && !env.asked("/command");
 }
 
 (:test)
@@ -663,10 +640,11 @@ function theLogGoesWhileTheAnswerPlays(logger as Logger) as Boolean {
     c.captureEnded();
     env.settleUntilEvents();
     env.reply("/events", 200, {"cursor" => 2, "events" => [{"i" => 1, "state" => "generating"}, {"i" => 2, "state" => "speaking"}]});
-    env.reply("/events", 200, {"cursor" => 3, "events" => [{"i" => 3, "piece" => 0, "ms" => 3000}]});
     // his turn, the wait for the answer and the piece on its way all had the link to themselves
     var waited = !env.asked("/log") && env.onlyOpen().find("/piece/0") != null;
     env.replyOnly(200, Kit.silence(3000));
+    // the second piece, asked for ahead, has not come yet: the log goes while the first one plays
+    env.reply("/piece/1", 204, null);
     return waited && io.played.size() == 1 && env.onlyOpen().find("/log") != null;
 }
 
@@ -715,11 +693,11 @@ function aMicrophoneThatFlushesInsideItsStopSendsTheRestInOneRequest(logger as L
     c.chunk(Kit.silence(300));
     io.flushOnStop = Kit.silence(120);
     c.press();
-    // nothing went out from inside the stop: one request carries what was waiting and the tail
+    // nothing went out from inside the stop: one request carries what was waiting, the tail and the press
     var body = env.bodyOf("/audio");
-    var whole = env.inFlight() == 1 && body != null && body.size() == 430;
+    var whole = env.inFlight() == 1 && body != null && body.size() == 430 && env.onlyOpen().find("&end=1") != null;
     env.replyOnly(200, {});
-    return whole && env.onlyOpen().find("/command") != null;
+    return whole && env.onlyOpen().find("/events") != null && !env.asked("/command");
 }
 
 (:test)
@@ -742,9 +720,10 @@ function theScreenChangesWithTheCallAndNotWithEveryAnswer(logger as Logger) as B
     env.settleUntilEvents();
     env.reply("/events", 200, {"cursor" => 2, "events" => [{"i" => 1, "heard" => "add milk"}, {"i" => 2, "state" => "generating"}]});
     var thinking = CallScreen.face(c);
-    // polls that bring nothing leave the picture as it is
+    // the first piece, asked for ahead, is not there yet, and a poll brings nothing: the picture stays
+    env.reply("/piece/0", 204, null);
     env.reply("/events", 200, {"cursor" => 2, "events" => []});
-    env.reply("/events", 200, {"cursor" => 2, "events" => []});
+    env.reply("/piece/0", 204, null);
     var same = CallScreen.face(c).key().equals(thinking.key());
     env.reply("/events", 200, {"cursor" => 3, "events" => [{"i" => 3, "state" => "speaking"}]});
     var speaking = CallScreen.face(c);
@@ -763,10 +742,10 @@ function theScreenChangesWithTheCallAndNotWithEveryAnswer(logger as Logger) as B
 }
 
 (:test)
-function thePressRidesOnTheLastAudioWhereTheServerOffersIt(logger as Logger) as Boolean {
+function thePressRidesOnTheLastAudio(logger as Logger) as Boolean {
     var env = new FakeEnv();
     var io = new FakeIo();
-    var c = Kit.openedWith(env, io, ["end_on_audio"]);
+    var c = Kit.opened(env, io);
     c.chunk(Kit.silence(2500));
     var early = env.onlyOpen().find("/audio") != null && env.onlyOpen().find("end=") == null;
     c.chunk(Kit.silence(300));
@@ -788,10 +767,10 @@ function thePressRidesOnTheLastAudioWhereTheServerOffersIt(logger as Logger) as 
 }
 
 (:test)
-function playedReportsRideOnTheNextRequestWhereTheServerOffersIt(logger as Logger) as Boolean {
+function playedReportsRideOnTheNextRequest(logger as Logger) as Boolean {
     var env = new FakeEnv();
     var io = new FakeIo();
-    var c = Kit.openedWith(env, io, ["played_param"]);
+    var c = Kit.opened(env, io);
     Kit.turnSent(env, c);
     env.reply("/events", 200, {"cursor" => 3, "events" => [{"i" => 1, "state" => "generating"}, {"i" => 2, "state" => "speaking"}, {"i" => 3, "piece" => 0, "ms" => 1500}]});
     env.reply("/piece/0", 200, Kit.silence(4000));
@@ -806,10 +785,10 @@ function playedReportsRideOnTheNextRequestWhereTheServerOffersIt(logger as Logge
 }
 
 (:test)
-function theFirstPieceIsAskedForAheadOfItsAnnouncementWhereTheServerOffersIt(logger as Logger) as Boolean {
+function theFirstPieceIsAskedForAheadOfItsAnnouncement(logger as Logger) as Boolean {
     var env = new FakeEnv();
     var io = new FakeIo();
-    var c = Kit.openedWith(env, io, ["piece_wait"]);
+    var c = Kit.opened(env, io);
     Kit.turnSent(env, c);
     env.reply("/events", 200, {"cursor" => 1, "events" => [{"i" => 1, "state" => "generating"}]});
     var ahead = env.onlyOpen().find("/piece/0?wait=") != null;
@@ -834,37 +813,6 @@ function theFirstPieceIsAskedForAheadOfItsAnnouncementWhereTheServerOffersIt(log
 }
 
 (:test)
-function silenceAfterAnAnswerEndsAComputerCallAndNothingElse(logger as Logger) as Boolean {
-    var quiet = {"cursor" => 9, "events" => [{"i" => 9, "notice" => {"code" => "no_speech", "text" => "Nothing heard."}}]};
-    // before any answer the notice changes nothing
-    var env = new FakeEnv();
-    var io = new FakeIo();
-    var c = Kit.opened(env, io);
-    env.clock = 6000;
-    c.tick();
-    env.reply("/events", 200, quiet);
-    var first = !c.closed() && c.recording;
-    // after an answer it ends the call, with its own signal
-    c.noteGap(0, false);
-    env.clock = 12000;
-    c.tick();
-    env.reply("/events", 200, {"cursor" => 10, "events" => [{"i" => 10, "notice" => {"code" => "no_speech", "text" => "Nothing heard."}}]});
-    var ended = c.closed() && io.cues.indexOf(CallLogic.CUE_BYE) >= 0 && env.indexEnding("/c1") >= 0;
-    // in a session's call a long quiet is his to have
-    var env2 = new FakeEnv();
-    var io2 = new FakeIo();
-    var c2 = Kit.opened(env2, io2);
-    c2.noteGap(0, false);
-    env2.clock = 6000;
-    c2.tick();
-    env2.reply("/events", 200, {"cursor" => 1, "events" => [{"i" => 1, "state" => "recording", "owner" => "session", "session" => "Notes"}]});
-    env2.clock = 12000;
-    c2.tick();
-    env2.reply("/events", 200, quiet);
-    return first && ended && !c2.closed() && c2.recording;
-}
-
-(:test)
 function inASessionsCallTheMicrophoneFollowsItsPhasesAndBackAsksForComputer(logger as Logger) as Boolean {
     var env = new FakeEnv();
     var io = new FakeIo();
@@ -873,7 +821,7 @@ function inASessionsCallTheMicrophoneFollowsItsPhasesAndBackAsksForComputer(logg
     // Computer hands the call to a session, which waits: no turn starts by itself
     env.reply("/events", 200, {"cursor" => 2, "events" => [{"i" => 1, "state" => "generating"}, {"i" => 2, "state" => "wake", "owner" => "session", "session" => "Notes"}]});
     var face = CallScreen.face(c);
-    var waiting = c.inSession() && io.captures == 1 && !c.recording && face.title.equals("Notes");
+    var waiting = c.inSession() && io.captures == 1 && !c.recording && face.who.equals("Notes") && face.headline.equals("Listening");
     // Start begins a turn there; the session's recording phase begins one by itself
     c.press();
     var byPress = io.captures == 2 && c.recording;
@@ -884,17 +832,24 @@ function inASessionsCallTheMicrophoneFollowsItsPhasesAndBackAsksForComputer(logg
     env.settleUntilEvents();
     env.reply("/events", 200, {"cursor" => 3, "events" => [{"i" => 3, "state" => "recording", "owner" => "session", "session" => "Notes"}]});
     var byPhase = io.captures == 3 && c.recording;
-    // Back: the turn is dropped unsent, the server is asked for Computer, and nothing records meanwhile
+    // Back: the microphone stops, the rest of the turn's audio goes without a press, then the back command
     c.chunk(Kit.silence(100));
+    var cues = io.cues.size();
     c.back();
+    var tapped = io.cues.size() == cues + 1 && io.cues[cues] == CallLogic.CUE_TAKEN && !c.recording;
+    var waits = !env.asked("/command");
+    c.captureEnded();
+    var audio = env.onlyOpen();
+    var unsent = audio.find("/audio?turn=3") != null && audio.find("end=") == null;
+    env.replyOnly(200, {});
     var command = env.paramsOf("/command");
-    var asked = command != null && (command["action"] as String).equals("back") && (command["back"] as Number) == 1 && !c.recording;
+    var asked = command != null && (command["action"] as String).equals("back") && (command["back"] as Number) == 1;
     env.replyOnly(200, {});
     env.reply("/events", 200, {"cursor" => 4, "events" => [{"i" => 4, "state" => "recording", "owner" => "session", "session" => "Notes"}]});
     var held = io.captures == 3;
     env.reply("/events", 200, {"cursor" => 5, "events" => [{"i" => 5, "state" => "listening", "owner" => "computer", "session" => null}]});
-    return waiting && byPress && byPhase && asked && held && !c.inSession() && io.captures == 4 && c.recording
-        && CallScreen.face(c).title.equals("Computer");
+    return waiting && byPress && byPhase && tapped && waits && unsent && asked && held && !c.inSession() && io.captures == 4
+        && c.recording && CallScreen.face(c).who.equals("");
 }
 
 (:test)
@@ -956,7 +911,7 @@ function whenAWaitingSessionHasSpokenTheSpeakSignalSaysStartIsHisMove(logger as 
 function triesOfAPieceAskedForAheadDoNotCountAgainstAnAnnouncedOne(logger as Logger) as Boolean {
     var env = new FakeEnv();
     var io = new FakeIo();
-    var c = Kit.openedWith(env, io, ["piece_wait"]);
+    var c = Kit.opened(env, io);
     Kit.turnSent(env, c);
     env.reply("/events", 200, {"cursor" => 1, "events" => [{"i" => 1, "state" => "generating"}]});
     // the piece asked for ahead fails five times, with the events asked in between
@@ -981,18 +936,123 @@ function triesOfAPieceAskedForAheadDoNotCountAgainstAnAnnouncedOne(logger as Log
 }
 
 (:test)
-function aNewCallStartsWithoutAnAnswerBehindIt(logger as Logger) as Boolean {
+function everyPressTheWatchTakesBuzzes(logger as Logger) as Boolean {
     var env = new FakeEnv();
     var io = new FakeIo();
     var c = Kit.opened(env, io);
-    c.noteGap(0, false);
-    c.reconnect();
+    // send: the two short buzzes, once the microphone has stopped
     c.chunk(Kit.silence(300));
+    c.press();
+    var notYet = io.cues.indexOf(CallLogic.CUE_SENT) < 0;
+    c.captureEnded();
+    var sent = io.cues[io.cues.size() - 1] == CallLogic.CUE_SENT;
+    env.settleUntilEvents();
+    env.reply("/events", 200, {"cursor" => 2, "events" => [{"i" => 1, "state" => "generating"}, {"i" => 2, "piece" => 0, "ms" => 1500}]});
+    env.reply("/piece/0", 200, Kit.silence(4000));
+    // cut: the tap at once
+    var before = io.cues.size();
+    c.press();
+    var cut = io.cues.size() == before + 1 && io.cues[before] == CallLogic.CUE_TAKEN && c.recording;
+    // a send of a turn the microphone never filled: the tap, and nothing goes
+    var env2 = new FakeEnv();
+    var io2 = new FakeIo();
+    Trace.lines = [];
+    var c2 = new CallClient(io2.io(), env2);
+    io2.client = c2;
+    c2.start();
+    c2.press();
+    c2.captureEnded();
+    var empty = io2.cues.size() == 1 && io2.cues[0] == CallLogic.CUE_TAKEN;
+    // hang-up: the bye, and a press after it is not taken
+    c.bye();
+    var bye = io.cues[io.cues.size() - 1] == CallLogic.CUE_BYE;
+    var count = io.cues.size();
+    var refused = !c.press() && io.cues.size() == count;
+    return notYet && sent && cut && empty && bye && refused;
+}
+
+(:test)
+function startInAWaitingSessionTapsAndBackToComputerTapsOnce(logger as Logger) as Boolean {
+    var env = new FakeEnv();
+    var io = new FakeIo();
+    var c = Kit.opened(env, io);
+    Kit.turnSent(env, c);
+    env.reply("/events", 200, {"cursor" => 2, "events" => [{"i" => 1, "state" => "generating"}, {"i" => 2, "state" => "wake", "owner" => "session", "session" => "Notes"}]});
+    var before = io.cues.size();
+    c.press();
+    var speak = io.cues.size() == before + 1 && io.cues[before] == CallLogic.CUE_TAKEN && c.recording;
+    c.back();
+    var back = io.cues.size() == before + 2 && io.cues[before + 1] == CallLogic.CUE_TAKEN;
+    // a second Back while the first is on its way does nothing, and Start waits for Computer too
+    c.back();
+    var pressed = c.press();
+    return speak && back && io.cues.size() == before + 2 && !pressed && CallScreen.face(c).headline.equals("To Computer");
+}
+
+(:test)
+function theServerEndingTheCallLetsWhatPlaysFinishThenSaysBye(logger as Logger) as Boolean {
+    var env = new FakeEnv();
+    var io = new FakeIo();
+    var c = Kit.opened(env, io);
+    Kit.turnSent(env, c);
+    env.reply("/events", 200, {"cursor" => 2, "events" => [{"i" => 1, "state" => "generating"}, {"i" => 2, "piece" => 0, "ms" => 1500, "text" => "Bye."}]});
+    env.reply("/piece/0", 200, Kit.silence(4000));
+    c.noteGap(0, 0, false);
+    io.busyNow = true;
+    env.clock = 1000;
     c.tick();
-    env.reply("/c1", 200, {});
-    env.reply("voice/call", 201, {"call" => "c2"});
-    env.clock = 6000;
-    c.tick();
-    env.reply("/events", 200, {"cursor" => 1, "events" => [{"i" => 1, "notice" => {"code" => "no_speech", "text" => "Nothing heard."}}]});
-    return !c.closed() && c.recording;
+    env.reply("/events", 200, {"cursor" => 3, "events" => [{"i" => 3, "ended" => "idle"}]});
+    // the goodbye still plays: no bye yet, no recording, no hang-up
+    var playing = io.cues.indexOf(CallLogic.CUE_BYE) < 0 && !c.closed() && !c.recording && c.ending();
+    io.busyNow = false;
+    c.playbackIdle();
+    c.answerEnded();
+    var bye = io.cues.indexOf(CallLogic.CUE_BYE) >= 0 && c.closed() && env.onlyOpen().find("/c1") != null;
+    env.replyOnly(200, {});
+    // the hang-up is heard: the screen leaves for the menu
+    var left = io.closedCalls == 1;
+    // nothing playing: the end is at once
+    var env2 = new FakeEnv();
+    var io2 = new FakeIo();
+    var c2 = Kit.opened(env2, io2);
+    env2.clock = 6000;
+    c2.tick();
+    env2.reply("/events", 200, {"cursor" => 1, "events" => [{"i" => 1, "ended" => "idle"}]});
+    return playing && bye && left && c2.closed() && io2.cues.indexOf(CallLogic.CUE_BYE) >= 0 && !c2.recording;
+}
+
+(:test)
+function computersSentenceShowsWhileItsPiecePlaysAndASessionShowsOnlyItsName(logger as Logger) as Boolean {
+    var env = new FakeEnv();
+    var io = new FakeIo();
+    var c = Kit.opened(env, io);
+    Kit.turnSent(env, c);
+    env.reply("/events", 200, {"cursor" => 4, "events" => [{"i" => 1, "heard" => "weather tomorrow"}, {"i" => 2, "state" => "speaking"},
+        {"i" => 3, "piece" => 0, "ms" => 1500, "text" => "Rain from ten."}, {"i" => 4, "piece" => 1, "ms" => 1500, "text" => "Dry after two."}]});
+    env.reply("/piece/0", 200, Kit.silence(4000));
+    env.reply("/piece/1", 200, Kit.silence(4000));
+    // the pieces are with the player, which has not started the first one
+    var before = CallScreen.face(c).body;
+    c.noteGap(0, 0, false);
+    var first = CallScreen.face(c);
+    c.piecePlayed(0);
+    c.noteGap(1, 0, false);
+    var second = CallScreen.face(c).body;
+    // a piece that plays before its event brought the sentence shows it once the event comes
+    c.noteGap(2, 0, false);
+    var none = CallScreen.face(c).body;
+    env.reply("/events", 200, {"cursor" => 5, "events" => [{"i" => 5, "piece" => 2, "ms" => 1500, "text" => "Wind from the west."}]});
+    var late = CallScreen.face(c).body;
+    env.reply("/piece/2", 200, Kit.silence(4000));
+    // a session: its name and the state, no words of either side
+    c.playbackIdle();
+    env.settle();
+    env.reply("/events", 200, {"cursor" => 8, "events" => [{"i" => 6, "heard" => "tell notes"}, {"i" => 7, "state" => "wake", "owner" => "session", "session" => "Notes"},
+        {"i" => 8, "piece" => 3, "ms" => 1500}]});
+    env.reply("/piece/3", 200, Kit.silence(4000));
+    c.noteGap(3, 0, false);
+    var session = CallScreen.face(c);
+    return before.equals("") && first.headline.equals("Speaking") && first.body.equals("Rain from ten.") && second.equals("Dry after two.")
+        && none.equals("") && late.equals("Wind from the west.") && session.headline.equals("Speaking") && session.body.equals("")
+        && session.who.equals("Notes");
 }

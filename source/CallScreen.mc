@@ -4,47 +4,49 @@ import Toybox.Lang;
 // What the Computer screen shows at one moment. Two faces with the same key draw the same picture,
 // so the screen is drawn again only when the key changes.
 class Face {
-    var title as String = "Computer";
     var headline as String = "";
     var color as Graphics.ColorType = Graphics.COLOR_WHITE;
+    // what was heard or is being said, in Computer's call
     var body as String = "";
+    // the session the call is with, in a session's call
+    var who as String = "";
     var hint as String = "";
     var foot as String = "";
 
     function key() as String {
-        return title + "|" + headline + "|" + color + "|" + body + "|" + hint + "|" + foot;
+        return headline + "|" + color + "|" + body + "|" + who + "|" + hint + "|" + foot;
     }
 }
 
 // The call's state as one word in one colour: grey while the watch is not ready, green when he can
 // speak, yellow while his turn is on its way or the answer is made, blue while it plays, red when
-// something stopped.
+// something stopped. In Computer's call the words heard and spoken show under it; in a session's call
+// only the session's name does.
 module CallScreen {
     function face(c as CallClient) as Face {
         var f = new Face();
         var fatal = c.fatal;
-        var ended = c.endedReason;
         var stalled = c.stalled;
-        if (c.inSession()) {
-            f.title = c.sessionTitle.length() > 0 ? c.sessionTitle : "Session";
+        var session = c.inSession();
+        if (session) {
+            f.who = c.sessionTitle.length() > 0 ? c.sessionTitle : "Session";
         }
-        if (c.closed()) {
+        if (c.closed() || c.ending()) {
             f.headline = "Hanging up";
             f.color = Graphics.COLOR_LT_GRAY;
         } else if (fatal != null) {
             f.headline = "Unavailable";
             f.color = Graphics.COLOR_RED;
             f.body = fatal;
-        } else if (ended != null) {
-            f.headline = "Call ended";
-            f.color = Graphics.COLOR_RED;
-            f.body = ended;
-            f.hint = "Start: new call";
         } else if (stalled != null && !c.recording) {
             f.headline = "Not listening";
             f.color = Graphics.COLOR_RED;
             f.body = stalled;
             f.hint = "Start: try again";
+        } else if (c.leaving()) {
+            // Back in a session's call: the call goes back to Computer
+            f.headline = "To Computer";
+            f.color = Graphics.COLOR_LT_GRAY;
         } else if (c.recording && !c.micLive) {
             // the microphone has not delivered yet: nothing he says now is recorded
             f.headline = "Wait";
@@ -62,23 +64,21 @@ module CallScreen {
         } else if (c.engine.equals("speaking") || c.playbackActive) {
             f.headline = "Speaking";
             f.color = Graphics.COLOR_BLUE;
-            f.body = c.heard;
+            f.body = session ? "" : c.spoken;
             f.hint = "Start: interrupt";
         } else if (c.engine.equals("generating")) {
             f.headline = "Thinking";
             f.color = Graphics.COLOR_YELLOW;
-            f.body = c.heard;
+            f.body = session ? "" : c.heard;
             f.hint = "Start: interrupt";
         } else {
-            f.headline = "Ready";
+            // a session that waits for what comes, or Computer after a press that had nothing to answer
+            f.headline = session ? "Listening" : "Ready";
             f.hint = "Start: speak";
-            if (c.inSession()) {
-                f.body = "Back: Computer";
-            }
         }
         var notice = c.notice;
         if (notice != null) {
-            // a notice is short-lived and says what just happened: it goes over what the server heard
+            // a notice is short-lived and says what just happened: it goes over the text and the name
             f.body = notice;
         }
         f.foot = c.linkTrouble();

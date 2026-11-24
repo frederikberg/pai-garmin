@@ -23,10 +23,3 @@ function settingsAreCompleteWithAWebAddressAndAKey(logger as Logger) as Boolean 
 function settingsStartEmpty(logger as Logger) as Boolean {
     return !ServerConfig.isSet();
 }
-
-(:test)
-function theAppOpensIntoComputerUnlessTheGlanceOrTheSettingSaysMenu(logger as Logger) as Boolean {
-    return ServerConfig.opensComputer(0, false, true) && !ServerConfig.opensComputer(0, true, true)
-        && ServerConfig.opensComputer(1, true, true) && !ServerConfig.opensComputer(2, false, true)
-        && !ServerConfig.opensComputer(1, false, false);
-}
