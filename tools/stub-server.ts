@@ -35,6 +35,12 @@
 // GET /__stub/call-session?title=<title>&phase=<wake|recording> hands every call to a session's call
 // (a press there sends the turn and the session's answer, a piece without a sentence, follows in the
 // wake phase); a back command, or GET /__stub/call-session?off=1, gives it back to Computer.
+//
+// The self-report (POST /api/watch/self-report?id=<uuid>&feel=<heavy|okay|good>&at=<time>, the body
+// Ogg Opus) answers 202 {id} and keeps the upload in memory, once per id (a repeat answers 202 again
+// and is not counted twice). GET /__stub/self-reports lists what arrived; GET
+// /__stub/self-report-fail?count=<N>[&code=<status>] answers the next N uploads with that status
+// (default 503) without keeping them.
 const port = Number(process.env.PORT ?? 8099)
 const key = process.env.WATCH_KEY ?? 'stub-key'
 let scenario = process.env.SCENARIO ?? 'alarms'
@@ -148,6 +154,9 @@ let idleS = Number(process.env.IDLE_S ?? 180)
 let logDropped = 0
 let fail: { mode: string; count: number; path: string; ms: number } = { mode: '', count: 0, path: '', ms: 0 }
 let logLines = 0
+type SelfReport = { id: string; feel: string | null; at: string | null; bytes: number; ogg: boolean; tries: number }
+const selfReports = new Map<string, SelfReport>()
+let selfReportFail = { count: 0, code: 503 }
 
 function emit(call: Call, event: Record<string, unknown>) {
   const last = call.events.length ? call.events[call.events.length - 1].i : 0
@@ -442,6 +451,11 @@ Bun.serve({
       })
       return json({ session: !off })
     }
+    if (path === '/__stub/self-reports') return json({ reports: [...selfReports.values()] })
+    if (path === '/__stub/self-report-fail') {
+      selfReportFail = { count: Number(url.searchParams.get('count') ?? 1), code: Number(url.searchParams.get('code') ?? 503) }
+      return json(selfReportFail)
+    }
     if (path === '/__stub/call-owner') {
       ownerOnly = url.searchParams.get('on') === '1'
       return json({ ownerOnly })
@@ -462,6 +476,25 @@ Bun.serve({
         console.log(`  watch log (no call): ${JSON.stringify(line)}`)
       }
       return json({})
+    }
+    if (path === '/api/watch/self-report' && req.method === 'POST') {
+      const id = url.searchParams.get('id') ?? ''
+      const feel = url.searchParams.get('feel')
+      const at = url.searchParams.get('at')
+      const body = new Uint8Array(await req.arrayBuffer())
+      const ogg = body.length >= 4 && body[0] === 0x4f && body[1] === 0x67 && body[2] === 0x67 && body[3] === 0x53
+      console.log(`  self-report ${id} feel ${feel ?? 'none'} at ${at} ${body.length} B ${req.headers.get('content-type')} ogg ${ogg} try ${url.searchParams.get('try') ?? 0}`)
+      if (selfReportFail.count > 0) {
+        selfReportFail.count--
+        return json({ detail: 'injected' }, selfReportFail.code)
+      }
+      if (!/^[0-9a-f-]{36}$/.test(id) || (feel !== null && !['heavy', 'okay', 'good'].includes(feel)) || body.length === 0) {
+        return json({ detail: 'invalid' }, 422)
+      }
+      const known = selfReports.get(id)
+      if (known) known.tries++
+      else selfReports.set(id, { id, feel, at, bytes: body.length, ogg, tries: 1 })
+      return json({ id }, 202)
     }
     if (path.startsWith('/api/watch/voice/call')) return callRoute(req, url, path)
     if (path === '/api/watch/weather' && req.method === 'GET') {

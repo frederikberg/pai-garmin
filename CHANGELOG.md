@@ -6,6 +6,7 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ### Added
 
+- The Self-report sub-app, fourth in the menu after Alarm, for watches with audio: Skip or one of three faces (heavy, okay, good), then the microphone starts as it does in Computer, Start ends the recording and sends it once to `POST /api/watch/self-report`, two short buzzes and a *Saved* screen confirm the server has it, and the sub-app list returns after three seconds (Back returns at once). A failed send says why and Start sends the same recording again under the same id.
 - The Alarm sub-app: create, edit and delete one-off alarms from the watch, and stop a ringing alarm by opening the app. The time entry for a new alarm starts at the current time and shows it while you pick.
 - The Weather sub-app: the chance of rain in the next hour and the next twelve, coloured by verdict, with place and location age. Start refreshes.
 - Weather pages: Down shows the next twelve hours as bars (height the chance, colour how hard it rains) with the heaviest hour and the total amount, Down again the radar picture half an hour ahead; Up pages back. The rows name the heaviest hour and the amount, and every line shrinks its font until it fits the round screen.

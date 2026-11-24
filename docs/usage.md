@@ -8,7 +8,7 @@ The key travels through Garmin's app settings, so revoke it on the server if you
 
 ## Opening it
 
-However you open the app (the app list, a hot key set to the app, or the glance list, where the glance shows the next alarm, or that one rings, and Start opens the app) the menu comes first. It appears at once, without waiting for the network: *Computer* (selected, only on watches with audio), *Weather* and *Alarm*. Start opens the screen you chose, and only then does anything go to the server, so from a hot key one more Start begins a call.
+However you open the app (the app list, a hot key set to the app, or the glance list, where the glance shows the next alarm, or that one rings, and Start opens the app) the menu comes first. It appears at once, without waiting for the network: *Computer* (selected, only on watches with audio), *Weather*, *Alarm* and, on watches with audio, *Self-report*. Start opens the screen you chose, and only then does anything go to the server, so from a hot key one more Start begins a call.
 
 Right after the app opens it also checks, in the background, whether an alarm rings. The check goes out first, so a screen opened in the meantime shows "Loading..." for a moment and its request follows once the check is over. If nothing rings, the check is invisible. If an alarm rings, the app stops every ringing alarm by itself, drops whatever you had just opened and shows the alarm's time and name with "Stopping..." and then "Alarm stopped"; Start returns to the menu. If stopping fails, the screen says why and Start tries again. The glance only shows that an alarm rings; it never stops it.
 
@@ -34,6 +34,18 @@ Computer can connect the call to one of your sessions when you ask it to, ready 
 The app settings in Garmin Connect also have a *Mic filter* switch (noise and echo reduction on the microphone, off by default). The app settings in Garmin Connect have a *Debug log* switch. With it on, the trace of a Computer call is detailed (a line for every request and every piece), which shows where time goes; either way a turn leaves one summary line with its timings besides the errors.
 
 Opening the app from the glance list and pressing Up or Down now and then keeps it open.
+
+## Self-report
+
+A spoken diary entry, on watches with audio. Start on *Self-report* shows *Skip* (selected) and three faces: *Heavy* (blue, frowning), *Okay* (grey, flat) and *Good* (amber, smiling). Pick one, or Skip to send only your words; Start on it opens the microphone at once, the same way Computer does. A grey *Wait* turns into a green *Speak* with one short buzz when the microphone delivers; the chosen face shows below it. Start ends the recording and sends it in one request (a recording ends by itself at 64 KiB, about half a minute of speech). While it goes the screen says *Sending* and Back is ignored; when the server has it, two short buzzes sound and *Saved* shows for three seconds before the sub-app list returns, or at once on Back.
+
+If the server does not take the recording, a long buzz sounds and the screen says *Not sent* with the reason; Start sends the same recording again (the server knows it by its id, so a repeat is not a second entry) and Back drops it. Back before sending drops the recording too. Nothing plays and nothing is answered: the server turns the audio into a diary entry afterwards.
+
+<p align="center">
+  <img src="images/self-report.png" alt="Self-report: Skip and the faces Heavy, Okay and Good" width="30%">
+  <img src="images/self-report-speak.png" alt="Self-report recording: Speak with the chosen face and the hint Start: send" width="30%">
+  <img src="images/self-report-saved.png" alt="Self-report sent: Saved" width="30%">
+</p>
 
 ## Weather
 

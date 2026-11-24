@@ -12,6 +12,7 @@ Times are ISO 8601 in UTC with an offset, for example `2026-11-16T07:30:00+00:00
 | `DELETE /api/watch/alarm/{id}` | none | `200` with `{}` |
 | `POST /api/watch/alarm/dismiss` | none | `200` with `{}`, stops every ringing alarm |
 | `GET /api/watch/weather` | none | `200` with the weather below |
+| `POST /api/watch/self-report?id=…&feel=…&at=…` | recorded audio, see Self-report | `202` with `{"id": "<id>"}` |
 | `POST /api/watch/log` | `{"lines": [...]}`, see Watch log | `200 {}` |
 | `POST /api/watch/voice/call` and the routes below it | see Computer call | the Computer call |
 
@@ -57,6 +58,19 @@ The watch shows the two halves as rows (`Now 70 % · 15:20` with a line such as 
 Changing a time is a `PUT` because Connect IQ cannot send `PATCH`.
 
 The app does not read the answer of `DELETE` and dismiss, only that one came. It also accepts an empty `204`, which the simulator reports as an error (`-400`); the app counts that code as "sent" for these two routes and reads the state again afterwards.
+
+## Self-report
+
+A spoken self-report: the face the wearer picked (or none, when skipped) and what they said. The body is the whole recording as one Ogg Opus stream, 16 kHz mono, `Content-Type: audio/ogg`, the same encoding the Computer call's audio uses; it stops by itself at 64 KiB. Query parameters:
+
+| Parameter | Meaning |
+|---|---|
+| `id` | a UUID the watch makes per report; a repeat carries the same one and must not create a second report |
+| `feel` | `heavy`, `okay` or `good`; absent when the face was skipped |
+| `at` | when the recording began, ISO 8601 in UTC with an offset (the plus sign is sent escaped) |
+| `try` | present on a repeat, the attempt number; the server ignores it |
+
+The server answers `202 {"id": "<id>"}` as soon as it has stored the bytes; turning the audio into a report happens afterwards. Any other status is shown on the watch as a failure, and Start sends the same recording again with the same `id`. A `401` reads as a rejected key, a missing phone connection or no answer within 25 seconds as such.
 
 ## Computer call
 

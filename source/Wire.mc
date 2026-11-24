@@ -14,7 +14,10 @@ module Wire {
         var headers = authorization();
         var body = {} as Dictionary<Object, Object>;
         var params = request.params;
-        if (params != null) {
+        var audio = request.body;
+        if (audio != null) {
+            headers["Content-Type"] = "audio/ogg";
+        } else if (params != null) {
             headers["Content-Type"] = Communications.REQUEST_CONTENT_TYPE_JSON;
             body = params as Dictionary<Object, Object>;
         }
@@ -24,6 +27,12 @@ module Wire {
             // DELETE and dismiss are not read: their answer is not parsed as JSON
             :responseType => request.json ? Communications.HTTP_RESPONSE_CONTENT_TYPE_JSON : Communications.HTTP_RESPONSE_CONTENT_TYPE_TEXT_PLAIN
         };
+        if (audio != null) {
+            // the audio rides as the body option with no parameters, as the Computer call sends its turns
+            options[:body] = audio;
+            Communications.makeWebRequest(ServerConfig.url() + request.path, null, options, callback);
+            return;
+        }
         Communications.makeWebRequest(ServerConfig.url() + request.path, body, options, callback);
     }
 }
