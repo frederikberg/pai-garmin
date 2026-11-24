@@ -209,19 +209,32 @@ class ComputerView extends WatchUi.View {
 
 class ComputerDelegate extends WatchUi.BehaviorDelegate {
     private var _view as ComputerView;
+    // the press being handled is the Start button's: a tap on the screen maps to the same select
+    private var _startDown as Boolean = false;
 
     function initialize(view as ComputerView) {
         BehaviorDelegate.initialize();
         _view = view;
     }
 
+    function onKeyPressed(evt as WatchUi.KeyEvent) as Boolean {
+        _startDown = evt.getKey() == WatchUi.KEY_ENTER;
+        return false;
+    }
+
     function onSelect() as Boolean {
-        _view.press();
+        if (_startDown) {
+            _startDown = false;
+            _view.press();
+        }
         return true;
     }
 
-    // A tap (a sleeve, sweat) is not a press: only the button sends or cuts.
+    // A tap (a sleeve, sweat) is not a press: only the button sends or cuts. It is logged, to tell
+    // whether taps keep an app opened from the glance list alive.
     function onTap(evt as WatchUi.ClickEvent) as Boolean {
+        _startDown = false;
+        Trace.add("tap", {"uptime_ms" => System.getTimer() - Trace.bornAt});
         return true;
     }
 
