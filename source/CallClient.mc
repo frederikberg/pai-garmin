@@ -528,6 +528,23 @@ class CallClient {
         }
     }
 
+    // The watch stopped the microphone while the app was hidden, in the middle of a turn: it starts
+    // again in the same turn, and its new stream follows the old one (the server reads chained
+    // streams). Nothing while the microphone still runs or the turn is over.
+    function resumeMic() as Void {
+        if (!recording || _captureOpen || _endPending || _closing || _dropping) {
+            return;
+        }
+        var started = _io.startCapture.invoke();
+        if (started == 0) {
+            _captureOpen = true;
+            Trace.add("mic_resumed", {"turn" => _turn, "bytes" => _turnBytes});
+        } else {
+            Trace.add("mic_resume_failed", {"code" => started});
+        }
+        changed();
+    }
+
     function captureFailed(code as Number) as Void {
         Trace.add("capture_error", {"code" => code});
         Trace.debug("capture_state", {"state" => "error", "code" => code});

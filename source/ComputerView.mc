@@ -64,7 +64,15 @@ class ComputerView extends WatchUi.View {
             Home.target = self;
         }
         Home.showing(self);
+        if (!Home.covered) {
+            _client.resumeMic();
+        }
         Home.redraw();
+    }
+
+    // Back on screen after a short hide: a microphone the watch stopped meanwhile starts again.
+    function shownAgain() as Void {
+        _client.resumeMic();
     }
 
     // The watch hides the screen for a notification, the watch face and the menu opened on top

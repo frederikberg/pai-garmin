@@ -1171,3 +1171,21 @@ function aTurnSentForALongHideHangsUpAfterTwentySecondsWithoutAnAnswer(logger as
     c.tick();
     return waiting && env.indexEnding("/c1") >= 0;
 }
+
+(:test)
+function aMicrophoneTheWatchStoppedMidTurnStartsAgainInTheSameTurn(logger as Logger) as Boolean {
+    var env = new FakeEnv();
+    var io = new FakeIo();
+    var c = Kit.opened(env, io);
+    c.chunk(Kit.silence(2500));
+    env.replyOnly(200, {});
+    // the app is hidden: the watch ends the capture with no press
+    c.captureEnded();
+    c.resumeMic();
+    var again = io.captures == 2 && c.recording;
+    // a second call does nothing while the new capture runs
+    c.resumeMic();
+    c.chunk(Kit.silence(2500));
+    env.settle();
+    return again && io.captures == 2 && env.audioBytes >= 5000 && env.indexOf("turn=1") >= 0 && env.indexOf("turn=2") < 0;
+}
