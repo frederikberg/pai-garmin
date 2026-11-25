@@ -90,6 +90,8 @@ class Outcome {
     var state as AlarmState? = null;
     // the parsed JSON object of a successful answer, for screens that read other routes
     var data as Dictionary? = null;
+    // the JSON object of a failed answer, when it reaches the watch (the simulator drops it)
+    var body as Dictionary? = null;
 
     function initialize(kind as Number) {
         self.kind = kind;
@@ -115,7 +117,11 @@ class Outcome {
             return new Outcome(OK);
         }
         if (responseCode < 200 || responseCode > 299) {
-            return failed("http_" + responseCode);
+            var f = failed("http_" + responseCode);
+            if (data instanceof Dictionary) {
+                f.body = data;
+            }
+            return f;
         }
         var o = new Outcome(OK);
         if (data instanceof Dictionary) {

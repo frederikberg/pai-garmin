@@ -343,3 +343,26 @@ function theMenuSaysHowManyRecordingsWait(logger as Logger) as Boolean {
     var one = Home.waitingLabel(1);
     return none && one != null && one.equals("1 waiting");
 }
+
+(:test)
+function aGapGoesOnFromTheServersCountWithTheNextStoredPart(logger as Logger) as Boolean {
+    OutboxKit.fresh();
+    // the server has confirmed 3 parts, the watch deleted them, then the server lost the last two
+    Outbox.reports.add(OutboxKit.report("r", 5, 3, true));
+    Storage.setValue(Outbox.partKey("r", 3), [1]b);
+    Storage.setValue(Outbox.partKey("r", 4), [2]b);
+    var bare = Outcome.failed("http_409");
+    // without its body the gap is tried again later
+    Outbox.answered("r", 3, false, bare);
+    var report = Outbox.find("r");
+    var waits = OutboxKit.counts(report, "sent", 3) && Outbox.retryAt > System.getTimer();
+    var gap = Outcome.failed("http_409");
+    gap.body = {"next_part" => 1.0};
+    Outbox.answered("r", 3, false, gap);
+    // slot 3 goes next under the number 1, slot 4 as number 2 ends the report
+    var ok = waits && OutboxKit.goes(report, 1, 0) && OutboxKit.stored("r", 3) && OutboxKit.counts(report, "gaps", 2);
+    Outbox.answered("r", 1, false, OutboxKit.answer(2));
+    ok = ok && OutboxKit.goes(report, 2, 1) && !OutboxKit.stored("r", 3);
+    OutboxKit.clear();
+    return ok;
+}

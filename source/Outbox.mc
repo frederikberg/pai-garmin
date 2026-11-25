@@ -394,6 +394,10 @@ module Outbox {
             } else {
                 Trace.debug("self_report_part", line);
             }
+        } else if (resumeAt(report, outcome)) {
+            // the server lacks parts the watch already deleted: the rest goes on from its count, and
+            // the screen hears no failure
+            outcome = new Outcome(Outcome.OK);
         } else if ("http_413".equals(outcome.code)) {
             // the recording reached the server's cap: it ends with what the server has
             Trace.add("self_report_capped", {"part" => part});
@@ -452,6 +456,30 @@ module Outbox {
         for (var k = sent + gaps; k < upTo + gaps; k++) {
             drop(id, k);
         }
+    }
+
+    // A gap (409) whose answer names the server's count m below the part sent: the watch deleted
+    // the parts between when they were confirmed, so that slice is lost, and the next stored part
+    // goes under the number m. Without the count the part is tried again like any failure.
+    function resumeAt(report as Dictionary<String, Object?>, outcome as Outcome) as Boolean {
+        if (!"http_409".equals(outcome.code)) {
+            return false;
+        }
+        var body = outcome.body;
+        var m = Outcome.number(body != null ? body["next_part"] as Object? : null);
+        var sent = report["sent"] as Number;
+        if (m == null || m < 0 || m >= sent) {
+            return false;
+        }
+        Trace.add("outbox_gap", {"sent" => sent, "next" => m});
+        report["gaps"] = (report["gaps"] as Number) + sent - m;
+        report["sent"] = m;
+        report["tries"] = 0;
+        try {
+            save();
+        } catch (ex) {
+        }
+        return true;
     }
 
     // The next try: soon while only the phone link is missing (checking it sends nothing), later
