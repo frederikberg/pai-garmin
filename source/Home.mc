@@ -18,6 +18,12 @@ module Home {
     var resetsLeft as Number = 0;
     // a reset is closing screens: a second one waits for it rather than popping the same screen again
     var resetting as Boolean = false;
+    // the app is hidden (onInactive until onActive): the watch takes no change of its screens then
+    var covered as Boolean = false;
+    // the sub-app screen told when a hide lasts KEEP_MS (it has hiddenTooLong), null when none is up
+    var target as Object? = null;
+    // a screen that wanted to close while the app was hidden; it closes when the app is back
+    var pendingPop as Object? = null;
 
     function create() as [WatchUi.Menu2, WatchUi.Menu2InputDelegate] {
         var menu = new WatchUi.Menu2({:title => "PAI"});
@@ -38,11 +44,37 @@ module Home {
         return hiddenMs < KEEP_MS;
     }
 
+    // Asks for a redraw, except while hidden.
+    function redraw() as Void {
+        if (!covered) {
+            WatchUi.requestUpdate();
+        }
+    }
+
+    // A screen closes itself: now, or once the app is back if it is hidden.
+    function close(view as Object) as Void {
+        if (covered) {
+            pendingPop = view;
+        } else {
+            WatchUi.popView(WatchUi.SLIDE_RIGHT);
+        }
+    }
+
+    // Back after a short hide: a screen that wanted to close meanwhile does so now, if still on top.
+    function closePending() as Void {
+        var view = pendingPop;
+        pendingPop = null;
+        if (view != null && WatchUi.getCurrentView()[0] == view) {
+            WatchUi.popView(WatchUi.SLIDE_RIGHT);
+        }
+    }
+
     // Every screen above the menu is closed, one per tick, since the view stack changes only after
     // the current event; a call's screen hangs up as it closes. The menu keeps the entry chosen last
     // selected, so it is moved back to the first.
     function reset() as Void {
         resetsLeft = MAX_DEPTH;
+        pendingPop = null;
         if (!resetting) {
             resetting = true;
             new HomeReset().step();

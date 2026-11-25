@@ -23,7 +23,6 @@ class ComputerView extends WatchUi.View {
     private var _client as CallClient;
     private var _speaker as Speaker;
     private var _recorder as Recorder;
-    private var _keepCall as Boolean = false;
     private var _volume as Number = START_VOLUME;
     // the screen has been left some way other than the end of the hang-up
     private var _left as Boolean = false;
@@ -44,6 +43,7 @@ class ComputerView extends WatchUi.View {
         var t2 = System.getTimer();
         _speaker = new Speaker(_client, _volume);
         var t3 = System.getTimer();
+        Home.target = self;
         // how long each piece of the screen's start took: a stall of the watch shows here
         Trace.add("startup", {"setup_ms" => t1 - t0, "client_start_ms" => t2 - t1, "speaker_ms" => t3 - t2});
     }
@@ -54,10 +54,11 @@ class ComputerView extends WatchUi.View {
         return new CallClient(io, new CallEnv());
     }
 
-    // Back from something that covered the screen (the hang-up had ended the call): a new call.
+    // On screen again: after a notification, a short hide or the menu above it the call goes on;
+    // when the call had ended meanwhile, a new one starts.
     function onShow() as Void {
-        _keepCall = false;
-        if (_client.closed()) {
+        Home.target = self;
+        if (_client.closed() && !_left) {
             _volume = _speaker.volume();
             _left = false;
             _client = build();
@@ -65,20 +66,25 @@ class ComputerView extends WatchUi.View {
             _client.start();
             _speaker = new Speaker(_client, _volume);
         }
-        WatchUi.requestUpdate();
+        Home.redraw();
     }
 
-    // Leaving the screen ends the call, except for the menu opened on top of it; closed by a reset
-    // after a long hide it always ends, whether or not the menu above it was seen to close.
+    // The watch hides the screen for a notification, the watch face and the menu opened on top
+    // alike, and the call goes on through all of them. Only the screen closing (Back, the end of
+    // the call, a reset after a long hide) ends it.
     function onHide() as Void {
-        if (!_keepCall || Home.resetting) {
+        if (_left || Home.resetting) {
             _left = true;
+            if (Home.target == self) {
+                Home.target = null;
+            }
             _client.hangUp();
         }
     }
 
-    function keepCallWhileMenu() as Void {
-        _keepCall = true;
+    // The app has been hidden for Home.KEEP_MS: the call ends, after what is being said went as the turn.
+    function hiddenTooLong() as Void {
+        _client.endAfterTurn();
     }
 
     function hangUp() as Void {
@@ -121,7 +127,7 @@ class ComputerView extends WatchUi.View {
             return false;
         }
         _client.bye();
-        WatchUi.requestUpdate();
+        Home.redraw();
         return true;
     }
 
@@ -130,7 +136,7 @@ class ComputerView extends WatchUi.View {
     function leave() as Void {
         if (!_left) {
             _left = true;
-            WatchUi.popView(WatchUi.SLIDE_RIGHT);
+            Home.close(self);
         }
     }
 
@@ -138,6 +144,10 @@ class ComputerView extends WatchUi.View {
     // adds the system's error tone, since the microphone is off then.
     function cue(kind as Number) as Boolean {
         Trace.add("buzz", {"cue" => CallLogic.cueName(kind)});
+        if (Home.covered) {
+            // a hidden app may not vibrate or sound
+            return true;
+        }
         if (Attention has :vibrate) {
             var pattern = CallLogic.buzz(kind);
             var profile = [] as Array<Attention.VibeProfile>;
@@ -176,7 +186,7 @@ class ComputerView extends WatchUi.View {
     // The client's state moved: the screen is drawn again when that changes what it shows.
     function changed() as Void {
         if (!CallScreen.face(_client).key().equals(_shown)) {
-            WatchUi.requestUpdate();
+            Home.redraw();
         }
     }
 
@@ -253,7 +263,6 @@ class ComputerDelegate extends WatchUi.BehaviorDelegate {
     function onMenu() as Boolean {
         var menu = new WatchUi.Menu2({:title => "Computer"});
         menu.addItem(new WatchUi.MenuItem("New call", null, :reconnect, null));
-        _view.keepCallWhileMenu();
         WatchUi.pushView(menu, new ComputerMenuDelegate(_view), WatchUi.SLIDE_LEFT);
         return true;
     }

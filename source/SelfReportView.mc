@@ -119,6 +119,13 @@ class SelfReportView extends WatchUi.View {
             cue(CallLogic.CUE_ERROR);
         }
         Trace.add("self_report_start", {"feel" => feel == null ? "skip" : feel, "state" => _flow.state});
+        Home.target = self;
+    }
+
+    function onShow() as Void {
+        if (!_left) {
+            Home.target = self;
+        }
     }
 
     // Start.
@@ -129,7 +136,7 @@ class SelfReportView extends WatchUi.View {
         } else if (action == SelfReportFlow.PRESS_SEND) {
             upload();
         }
-        WatchUi.requestUpdate();
+        Home.redraw();
     }
 
     // Back: leaves. A recording still running is dropped, which is what Back during it means; one
@@ -145,23 +152,49 @@ class SelfReportView extends WatchUi.View {
         return false;
     }
 
-    // The screen closes without Back (the app came back from a long hide): what was recorded so far
-    // is kept and sent like a finished recording.
+    // The watch hides the screen for a notification and the watch face too: the recording goes on.
+    // Only the screen closing (Back, leave, a reset) ends it; a reset keeps what was recorded.
     function onHide() as Void {
-        if (!_left && !_kept && (_flow.capturing() || _flow.state == SelfReportFlow.STOPPING)) {
-            if (_flow.capturing()) {
-                _stopping = true;
-                _recorder.stop();
-                _stopping = false;
-            }
-            if (_flow.audio.size() > 0) {
-                Trace.add("self_report_kept", {"bytes" => _flow.audio.size()});
-                keep();
-                Outbox.send();
-            }
+        if (!_left && !Home.resetting) {
+            return;
+        }
+        if (!_left) {
+            keepRecording();
         }
         _left = true;
+        if (Home.target == self) {
+            Home.target = null;
+        }
         cleanup();
+    }
+
+    // The app has been hidden for Home.KEEP_MS: what was recorded so far is kept and sent like a
+    // finished recording; the screen closes when the app is back.
+    function hiddenTooLong() as Void {
+        if (_flow.state == SelfReportFlow.SPEAK) {
+            Trace.add("self_report_kept", {"bytes" => _flow.audio.size()});
+            // as Start: the microphone's last data is waited for, then it goes to the Outbox
+            press();
+        }
+    }
+
+    private function keepRecording() as Void {
+        if (_kept || !(_flow.capturing() || _flow.state == SelfReportFlow.STOPPING)) {
+            return;
+        }
+        if (_flow.capturing()) {
+            _stopping = true;
+            _recorder.stop();
+            _stopping = false;
+        }
+        if (_flow.audio.size() > 0) {
+            Trace.add("self_report_kept", {"bytes" => _flow.audio.size()});
+            _flow.sending();
+            keep();
+            Outbox.listener = method(:onUploaded);
+            Outbox.listenerId = _id;
+            Outbox.send();
+        }
     }
 
     private function cleanup() as Void {
@@ -194,11 +227,11 @@ class SelfReportView extends WatchUi.View {
             // the microphone delivers: speak now
             Trace.add("self_report_mic_live", {"since_launch_ms" => System.getTimer() - Trace.bornAt});
             cue(CallLogic.CUE_YOUR_TURN);
-            WatchUi.requestUpdate();
+            Home.redraw();
         } else if (kept == SelfReportFlow.DATA_FULL && _flow.full()) {
             Trace.add("self_report_full", {"bytes" => _flow.audio.size()});
             stopRecording();
-            WatchUi.requestUpdate();
+            Home.redraw();
         }
     }
 
@@ -215,7 +248,7 @@ class SelfReportView extends WatchUi.View {
             _timer.stop();
             _flow.broken("Microphone error " + code);
             cue(CallLogic.CUE_ERROR);
-            WatchUi.requestUpdate();
+            Home.redraw();
         }
     }
 
@@ -249,7 +282,7 @@ class SelfReportView extends WatchUi.View {
         // Start asks for it now, whatever retry was planned
         Outbox.retryAt = 0;
         Outbox.send();
-        WatchUi.requestUpdate();
+        Home.redraw();
     }
 
     // An answer from the Outbox: about this recording, or a failure of an older one it waits behind.
@@ -268,21 +301,28 @@ class SelfReportView extends WatchUi.View {
         } else if (asked) {
             cue(CallLogic.CUE_ERROR);
         }
-        WatchUi.requestUpdate();
+        Home.redraw();
     }
 
     // Back to the sub-app list.
     function leave() as Void {
         if (!_left) {
             _left = true;
+            if (Home.target == self) {
+                Home.target = null;
+            }
             cleanup();
-            WatchUi.popView(WatchUi.SLIDE_RIGHT);
+            Home.close(self);
         }
     }
 
     // A buzz, and for an error the error tone too (the microphone is off then).
     function cue(kind as Number) as Void {
         Trace.add("buzz", {"cue" => CallLogic.cueName(kind)});
+        if (Home.covered) {
+            // a hidden app may not vibrate or sound
+            return;
+        }
         if (Attention has :vibrate) {
             var pattern = CallLogic.buzz(kind);
             var profile = [] as Array<Attention.VibeProfile>;
