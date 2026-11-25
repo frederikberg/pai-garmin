@@ -101,6 +101,8 @@ class SelfReportView extends WatchUi.View {
     private var _recorder as Recorder;
     // the recording is in the Outbox
     private var _kept as Boolean = false;
+    // the watch has the screen on screen (onShow until onHide)
+    private var _onScreen as Boolean = false;
     // Start asked for the send the next answer is about: only that one sounds the error
     private var _asked as Boolean = false;
     private var _timer as Timer.Timer = new Timer.Timer();
@@ -123,9 +125,11 @@ class SelfReportView extends WatchUi.View {
     }
 
     function onShow() as Void {
+        _onScreen = true;
         if (!_left) {
             Home.target = self;
         }
+        Home.showing(self);
     }
 
     // Start.
@@ -155,6 +159,7 @@ class SelfReportView extends WatchUi.View {
     // The watch hides the screen for a notification and the watch face too: the recording goes on.
     // Only the screen closing (Back, leave, a reset) ends it; a reset keeps what was recorded.
     function onHide() as Void {
+        _onScreen = false;
         if (!_left && !Home.resetting) {
             return;
         }
@@ -191,8 +196,6 @@ class SelfReportView extends WatchUi.View {
             Trace.add("self_report_kept", {"bytes" => _flow.audio.size()});
             _flow.sending();
             keep();
-            Outbox.listener = method(:onUploaded);
-            Outbox.listenerId = _id;
             Outbox.send();
         }
     }
@@ -312,7 +315,7 @@ class SelfReportView extends WatchUi.View {
                 Home.target = null;
             }
             cleanup();
-            Home.close(self);
+            Home.close(self, _onScreen);
         }
     }
 

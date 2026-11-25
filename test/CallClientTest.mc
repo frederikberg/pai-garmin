@@ -1152,3 +1152,22 @@ function aLongHideSendsTheTurnBeingSpokenBeforeTheCallHangsUp(logger as Logger) 
     env.replyOnly(200, {});
     return pressed && env.indexEnding("/c1") >= 0;
 }
+
+(:test)
+function aTurnSentForALongHideHangsUpAfterTwentySecondsWithoutAnAnswer(logger as Logger) as Boolean {
+    var env = new FakeEnv();
+    var io = new FakeIo();
+    var c = Kit.opened(env, io);
+    c.chunk(Kit.silence(2500));
+    env.replyOnly(200, {});
+    c.endAfterTurn();
+    c.captureEnded();
+    env.clock = 19000;
+    c.tick();
+    var waiting = env.indexEnding("/c1") < 0;
+    env.clock = 21000;
+    c.tick();
+    env.replyOnly(200, {});
+    c.tick();
+    return waiting && env.indexEnding("/c1") >= 0;
+}
