@@ -28,9 +28,14 @@ class PaiApp extends Application.AppBase {
     // The app ends: why and after how long go into the log, and the lines this run did not get to
     // send are kept for the next launch. Back on the menu is the one way out of the app's own; any
     // other end (the glance list's timeout, another app, the watch itself) is the system's.
-    (:typecheck(disableGlanceCheck))
+    // A recording still running is stored first, and the next start sends it.
+    (:typecheck(false))
     function onStop(state as Dictionary?) as Void {
         if (Trace.bornAt > 0) {
+            var target = Home.target;
+            if (target != null && target has :appStopped) {
+                target.appStopped();
+            }
             Trace.add("exit", {"cause" => Trace.exitCause, "uptime_ms" => System.getTimer() - Trace.bornAt, "in_call" => Trace.active});
         }
         Trace.keep();
