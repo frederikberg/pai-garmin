@@ -1605,7 +1605,8 @@ class CallClient {
         var field = data instanceof Dictionary ? data["next_seq"] as Object? : null;
         // an error answer may reach the watch without its body: then everything still held goes again
         // from the oldest chunk, which the server skips where it has it
-        var next = field instanceof Number ? field : _sentBase;
+        var seq = Outcome.number(field);
+        var next = seq != null ? seq : _sentBase;
         // the press goes again with the last audio, or as a command, under the same number
         _bodyEnd = 0;
         _conflicts += 1;
@@ -1614,7 +1615,7 @@ class CallClient {
             return;
         }
         var verdict = CallLogic.afterConflict(_seq, next, _sentBase);
-        Trace.add("seq_conflict", {"sent" => _seq, "expected" => next, "verdict" => verdict, "body" => field instanceof Number});
+        Trace.add("seq_conflict", {"sent" => _seq, "expected" => next, "verdict" => verdict, "body" => seq != null});
         if (verdict.equals("acked")) {
             if (next == _seq + 1) {
                 keepSent();

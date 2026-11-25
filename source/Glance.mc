@@ -46,7 +46,11 @@ class PaiGlance extends WatchUi.GlanceView {
         }
         if (state != null) {
             _text = state.summary(Time.now());
-            Application.Storage.setValue(STORAGE_KEY, _text);
+            try {
+                Application.Storage.setValue(STORAGE_KEY, _text);
+            } catch (ex) {
+                // a full store keeps the last summary; the glance shows the new one meanwhile
+            }
             WatchUi.requestUpdate();
         }
     }

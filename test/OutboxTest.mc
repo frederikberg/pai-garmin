@@ -22,6 +22,15 @@ module OutboxKit {
                 Storage.deleteValue(Outbox.partKey(r["id"] as String, k));
             }
         }
+        swept();
+        Later.cancel(Outbox.sweepJob);
+        Outbox.sweepJob = 0;
+        for (var i = 0; i < Outbox.RESERVE_PARTS; i++) {
+            Storage.deleteValue(Outbox.RESERVE_KEY + ":" + i);
+        }
+        Storage.deleteValue(Outbox.RESERVE_KEY);
+        Storage.deleteValue(Outbox.BUDGET_KEY);
+        Outbox.budget = Outbox.BUDGET_BYTES;
         Outbox.reports = [];
         Outbox.held = {};
         Outbox.inFlight = null;
@@ -29,6 +38,13 @@ module OutboxKit {
         Outbox.loaded = false;
         Storage.deleteValue(Outbox.KEY);
         Trace.active = false;
+    }
+
+    // Every deletion waiting is done.
+    function swept() as Void {
+        for (var i = 0; i < 1000 && Outbox.trash.size() > 0; i++) {
+            Outbox.sweep();
+        }
     }
 
     function answer(next as Number?) as Outcome {
@@ -57,7 +73,7 @@ module OutboxKit {
     }
 
     function report(id as String, parts as Number, sent as Number, done as Boolean) as Dictionary<String, Object?> {
-        return {"id" => id, "feel" => null, "at" => 0, "tries" => 0, "parts" => parts, "sent" => sent, "done" => done} as Dictionary<String, Object?>;
+        return {"id" => id, "feel" => null, "at" => 0, "tries" => 0, "parts" => parts, "sent" => sent, "gaps" => 0, "done" => done} as Dictionary<String, Object?>;
     }
 }
 
@@ -124,6 +140,7 @@ function theServersAcceptanceOfTheEndForgetsTheReport(logger as Logger) as Boole
     OutboxKit.fresh();
     Outbox.finish("r", null, new Time.Moment(100), [1]b, false);
     Outbox.answered("r", 0, true, OutboxKit.answer(null));
+    OutboxKit.swept();
     var ok = !Outbox.holds("r") && !OutboxKit.stored("r", 0) && Storage.getValue(Outbox.KEY) == null;
     OutboxKit.clear();
     return ok;
@@ -150,6 +167,7 @@ function theServersCapEndsTheReportWithWhatItHas(logger as Logger) as Boolean {
     Outbox.append("r", new [Outbox.PART_BYTES]b);
     Outbox.answered("r", 0, false, OutboxKit.answer(1));
     Outbox.answered("r", 1, false, Outcome.failed("http_413"));
+    OutboxKit.swept();
     var ends = OutboxKit.goes(Outbox.find("r"), 1, 1);
     var ok = ends && !OutboxKit.stored("r", 1) && Outbox.append("r", [1]b) == Outbox.APPEND_GONE;
     OutboxKit.clear();
@@ -157,12 +175,18 @@ function theServersCapEndsTheReportWithWhatItHas(logger as Logger) as Boolean {
 }
 
 (:test)
-function aRefusedReportIsDroppedWithItsParts(logger as Logger) as Boolean {
+function onlyA422DropsAReportWithItsParts(logger as Logger) as Boolean {
     OutboxKit.fresh();
     Outbox.open("r", null, new Time.Moment(100));
     Outbox.append("r", new [Outbox.PART_BYTES]b);
+    // any other refusal is tried again, and nothing is lost meanwhile
     Outbox.answered("r", 0, false, Outcome.failed("http_409"));
-    var ok = !Outbox.holds("r") && !OutboxKit.stored("r", 0) && Outbox.append("r", [1]b) == Outbox.APPEND_GONE;
+    Outbox.answered("r", 0, false, Outcome.failed("http_403"));
+    Outbox.answered("r", 0, false, Outcome.failed("http_400"));
+    var kept = Outbox.holds("r") && OutboxKit.stored("r", 0) && Outbox.retryAt > System.getTimer();
+    Outbox.answered("r", 0, false, Outcome.failed("http_422"));
+    OutboxKit.swept();
+    var ok = kept && !Outbox.holds("r") && !OutboxKit.stored("r", 0) && Outbox.append("r", [1]b) == Outbox.APPEND_GONE;
     OutboxKit.clear();
     return ok;
 }
@@ -214,22 +238,108 @@ function aRecordingTheLastRunLeftRunningIsEndedAtLoad(logger as Logger) as Boole
 }
 
 (:test)
-function aPartTheStorageLostEndsTheReportThere(logger as Logger) as Boolean {
+function aPartTheStorageLostIsSkippedAndTheOnesAfterItStillGo(logger as Logger) as Boolean {
     OutboxKit.fresh();
-    Outbox.reports.add(OutboxKit.report("r", 3, 1, true));
+    Outbox.reports.add(OutboxKit.report("r", 4, 1, true));
     Storage.setValue(Outbox.partKey("r", 2), [1]b);
-    // part 1 is missing: the request for it finds none, and the report ends before it
+    Storage.setValue(Outbox.partKey("r", 3), [2]b);
+    // slot 1 is missing: the request goes with slot 2 under the number 1
     Trace.active = false;
     Outbox.inFlight = null;
     Gate.open = false;
     Outbox.send();
-    var ok = OutboxKit.goes(Outbox.find("r"), 1, 1) && !OutboxKit.stored("r", 2);
+    var report = Outbox.find("r");
+    var skipped = OutboxKit.goes(report, 1, 0) && OutboxKit.counts(report, "gaps", 1) && OutboxKit.stored("r", 2);
     var call = Outbox.inFlight;
     if (call != null) {
         call.cancel();
     }
+    Outbox.inFlight = null;
+    Trace.active = true;
+    // the server has it: slot 2 goes, slot 3 is the last part, number 2
+    Outbox.answered("r", 1, false, OutboxKit.answer(2));
+    var ok = skipped && !OutboxKit.stored("r", 2) && OutboxKit.goes(report, 2, 1) && Outbox.unsent("r") == 1;
     Gate.open = true;
     Gate.waiting = [];
     OutboxKit.clear();
     return ok;
+}
+
+(:test)
+function aPartAnswerWithoutACountIsNotTheEnd(logger as Logger) as Boolean {
+    OutboxKit.fresh();
+    Outbox.open("r", null, new Time.Moment(100));
+    Outbox.append("r", new [Outbox.PART_BYTES]b);
+    Outbox.answered("r", 0, false, OutboxKit.answer(null));
+    var kept = Outbox.holds("r") && OutboxKit.stored("r", 0) && Outbox.retryAt > System.getTimer();
+    // the server says the recording is complete already: the rest is dropped
+    var done = new Outcome(Outcome.OK);
+    done.data = {"id" => "r", "complete" => true};
+    Outbox.answered("r", 0, false, done);
+    OutboxKit.swept();
+    var ok = kept && !Outbox.holds("r") && !OutboxKit.stored("r", 0);
+    OutboxKit.clear();
+    return ok;
+}
+
+(:test)
+function aConfirmationLeavesNoPartBehindAfterALoad(logger as Logger) as Boolean {
+    OutboxKit.clear();
+    // the list says the server has part 0, but the run stopped before deleting it
+    Storage.setValue(Outbox.KEY, [OutboxKit.report("r", 2, 1, true)] as Array<Storage.ValueType>);
+    Storage.setValue(Outbox.partKey("r", 0), [1]b);
+    Storage.setValue(Outbox.partKey("r", 1), [2]b);
+    Outbox.load();
+    var ok = !OutboxKit.stored("r", 0) && OutboxKit.stored("r", 1) && OutboxKit.goes(Outbox.find("r"), 1, 1);
+    OutboxKit.clear();
+    return ok;
+}
+
+(:test)
+function aForgottenReportsPartsGoAFewAtATime(logger as Logger) as Boolean {
+    OutboxKit.fresh();
+    Outbox.reports.add(OutboxKit.report("r", 3 * Outbox.SWEEP_KEYS, 0, true));
+    for (var k = 0; k < 3 * Outbox.SWEEP_KEYS; k++) {
+        Storage.setValue(Outbox.partKey("r", k), [1]b);
+    }
+    Outbox.forget("r");
+    var waits = OutboxKit.stored("r", 0) && Outbox.trash.size() == 1;
+    Outbox.sweep();
+    var some = !OutboxKit.stored("r", Outbox.SWEEP_KEYS - 1) && OutboxKit.stored("r", Outbox.SWEEP_KEYS);
+    // what the run did not get to is deleted after the next load
+    Outbox.loaded = false;
+    Outbox.trash = [];
+    Outbox.load();
+    OutboxKit.swept();
+    var all = !OutboxKit.stored("r", 3 * Outbox.SWEEP_KEYS - 1) && Storage.getValue(Outbox.TRASH_KEY) == null;
+    OutboxKit.clear();
+    return waits && some && all;
+}
+
+(:test)
+function theFirstFullStorageFreesTheReserveAndTeachesTheBudget(logger as Logger) as Boolean {
+    OutboxKit.fresh();
+    Outbox.open("r", null, new Time.Moment(100));
+    var reserved = Storage.getValue(Outbox.RESERVE_KEY) != null && Storage.getValue(Outbox.RESERVE_KEY + ":0") instanceof ByteArray;
+    Outbox.reports.add(OutboxKit.report("old", 10, 0, true));
+    Outbox.deviceFull();
+    var freed = Storage.getValue(Outbox.RESERVE_KEY) == null && Storage.getValue(Outbox.RESERVE_KEY + ":1") == null;
+    var learned = Storage.getValue(Outbox.BUDGET_KEY);
+    var taught = learned instanceof Number && learned == (10 - Outbox.RESERVE_PARTS) * Outbox.PART_BYTES && Outbox.budget == learned;
+    // the next run starts from what was learned
+    Outbox.reports = [];
+    Outbox.budget = Outbox.BUDGET_BYTES;
+    Outbox.loaded = false;
+    Storage.deleteValue(Outbox.KEY);
+    Outbox.load();
+    var kept = Outbox.budget == (10 - Outbox.RESERVE_PARTS) * Outbox.PART_BYTES;
+    OutboxKit.clear();
+    return reserved && freed && taught && kept;
+}
+
+(:test)
+function theMenuSaysHowManyRecordingsWait(logger as Logger) as Boolean {
+    var none = Home.waitingLabel(0) == null;
+    var one = Home.waitingLabel(1);
+    return none && one != null && one.equals("1 waiting");
 }

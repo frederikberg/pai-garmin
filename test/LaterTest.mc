@@ -48,3 +48,9 @@ function onlyAnAnswerThatNeverChangesDropsAReport(logger as Logger) as Boolean {
         && !Outbox.refused(Outcome.failed("http_429")) && !Outbox.refused(Outcome.failed("timeout"))
         && !Outbox.refused(Outcome.failed("no_phone"));
 }
+
+(:test)
+function aGapOrAForbiddenAnswerIsTriedAgain(logger as Logger) as Boolean {
+    var gap = !Outbox.refused(Outcome.failed("http_409"));
+    return gap && !Outbox.refused(Outcome.failed("http_403")) && !Outbox.refused(Outcome.failed("http_400"));
+}

@@ -8,9 +8,6 @@ import Toybox.Timer;
 class Call {
     const TIMEOUT_MS = 25000;
 
-    // how long the answer is waited for; a request whose server works longer sets more
-    var timeoutMs as Number = TIMEOUT_MS;
-
     private var _callback as Method(outcome as Outcome) as Void;
     // the watchdog's job in Later, 0 when none waits
     private var _watchdog as Number = 0;
@@ -51,7 +48,7 @@ class Call {
         } else {
             Idle.busy += 1;
             _counted = true;
-            _watchdog = Later.at(timeoutMs, method(:onTimeout));
+            _watchdog = Later.at(TIMEOUT_MS, method(:onTimeout));
             try {
                 Wire.send(request, method(:onResponse));
             } catch (ex) {
