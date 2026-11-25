@@ -117,7 +117,11 @@ class ComputerView extends WatchUi.View {
 
     private function setVolume(volume as Number) as Void {
         _speaker.setVolume(volume);
-        Storage.setValue(VOLUME_KEY, _speaker.volume());
+        try {
+            Storage.setValue(VOLUME_KEY, _speaker.volume());
+        } catch (ex) {
+            // a full store forgets the volume at the next start, never the call
+        }
         _client.say("Volume " + _speaker.volume());
     }
 

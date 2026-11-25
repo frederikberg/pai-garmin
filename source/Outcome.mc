@@ -125,6 +125,15 @@ class Outcome {
         return o;
     }
 
+    // A JSON number of an answer as an integer, whatever type it arrives as (the simulator hands
+    // them over as Floats); null for anything else.
+    static function number(v as Object?) as Number? {
+        if (v instanceof Number || v instanceof Long || v instanceof Float || v instanceof Double) {
+            return v.toNumber();
+        }
+        return null;
+    }
+
     function isOk() as Boolean {
         return kind == OK;
     }

@@ -115,6 +115,11 @@ class SelfReportView extends WatchUi.View {
     // the microphone's stop is in progress: nothing is sent from inside it
     private var _stopping as Boolean = false;
     private var _left as Boolean = false;
+    // the watch hid the screen since it was last shown: the microphone may have been stopped
+    private var _hidden as Boolean = false;
+    // parts wait on the watch for the phone while recording
+    private var _offline as Boolean = false;
+    private var _micSaid as Boolean = false;
 
     function initialize(feel as String?) {
         View.initialize();
@@ -140,7 +145,7 @@ class SelfReportView extends WatchUi.View {
             Home.target = self;
         }
         Home.showing(self);
-        if (!Home.covered) {
+        if (!Home.covered && _hidden) {
             resumeMic();
         }
     }
@@ -157,6 +162,7 @@ class SelfReportView extends WatchUi.View {
         if (_left || _stopping || !_flow.capturing() || _flow.captureOpen() && _recorder.running()) {
             return;
         }
+        _hidden = false;
         if (_flow.resumed(_recorder.start())) {
             Trace.add("self_report_mic_resumed", {"bytes" => _flow.bytes});
         } else {
@@ -181,9 +187,14 @@ class SelfReportView extends WatchUi.View {
         Home.redraw();
     }
 
-    // Back: leaves. What was recorded is kept and goes on its own, as it would after Start: parts
-    // of it may be on the server already.
+    // Back while speaking ends the recording as Start does (parts of it may be on the server
+    // already): the last audio is waited for, it goes, and "Saved" leaves by itself. Back at any
+    // other time leaves at once, keeping what was recorded.
     function back() as Boolean {
+        if (_flow.state == SelfReportFlow.SPEAK) {
+            press();
+            return true;
+        }
         keepRecording();
         _left = true;
         cleanup();
@@ -195,6 +206,7 @@ class SelfReportView extends WatchUi.View {
     function onHide() as Void {
         _onScreen = false;
         if (!_left && !Home.resetting) {
+            _hidden = true;
             return;
         }
         if (!_left) {
@@ -273,8 +285,11 @@ class SelfReportView extends WatchUi.View {
         }
         var kept = _flow.data(data);
         if (kept == SelfReportFlow.DATA_FIRST) {
-            // the microphone delivers: speak now
-            Trace.add("self_report_mic_live", {"since_launch_ms" => System.getTimer() - Trace.bornAt});
+            // the microphone delivers, at the start or after it started again: speak now
+            if (!_micSaid) {
+                _micSaid = true;
+                Trace.add("self_report_mic_live", {"since_launch_ms" => System.getTimer() - Trace.bornAt});
+            }
             cue(CallLogic.CUE_YOUR_TURN);
             Home.redraw();
         } else if (kept == SelfReportFlow.DATA_FULL && _flow.full()) {
@@ -301,6 +316,11 @@ class SelfReportView extends WatchUi.View {
             }
         }
         Outbox.kick();
+        var offline = !System.getDeviceSettings().phoneConnected && Outbox.unsent(_id) > 0;
+        if (offline != _offline) {
+            _offline = offline;
+            Home.redraw();
+        }
     }
 
     private function stopFor(code as Number) as Void {
@@ -310,7 +330,7 @@ class SelfReportView extends WatchUi.View {
             _stopping = true;
             _recorder.stop();
             _stopping = false;
-            _flow.broken("The server took no more of this recording");
+            _flow.refuse("The server refused the recording");
             cue(CallLogic.CUE_ERROR);
             Home.redraw();
             return;
@@ -319,7 +339,7 @@ class SelfReportView extends WatchUi.View {
             // the server's cap is reached: what it has is the recording
             _flow.full();
         } else {
-            Trace.add("self_report_storage_full", {"kept_bytes" => Outbox.stored(), "limit" => code == Outbox.APPEND_BUDGET ? "budget" : "device", "bytes" => _flow.bytes});
+            Trace.add("self_report_storage_full", {"kept_bytes" => Outbox.stored(), "limit" => code == Outbox.APPEND_BUDGET ? "budget" : "device", "bytes" => _flow.bytes, "write_ms" => Outbox.lastWriteMs});
             _flow.storageFull();
         }
         stopRecording();
@@ -399,6 +419,13 @@ class SelfReportView extends WatchUi.View {
         }
         var asked = _asked;
         _asked = false;
+        if (!outcome.isOk() && !mine) {
+            // refused for good: nothing is left to send, so Start offers nothing
+            _flow.refuse(outcome.text() + ". The server refused the recording");
+            cue(CallLogic.CUE_ERROR);
+            Home.redraw();
+            return;
+        }
         _flow.result(outcome.isOk(), outcome.isOk() ? "" : outcome.text() + (mine ? ". Kept on the watch, it goes by itself" : ""));
         if (outcome.isOk()) {
             cue(CallLogic.CUE_SENT);
@@ -462,7 +489,7 @@ class SelfReportView extends WatchUi.View {
             color = Graphics.COLOR_RED;
             hint = "Start: try again";
         } else if (state == SelfReportFlow.BROKEN) {
-            headline = "Unavailable";
+            headline = _flow.refused ? "Not sent" : "Unavailable";
             color = Graphics.COLOR_RED;
         }
         if (_flow.filled && state != SelfReportFlow.DONE) {
@@ -477,7 +504,7 @@ class SelfReportView extends WatchUi.View {
         dc.drawCircle(w / 2, h / 2, (w < h ? w : h) / 2 - RING / 2);
         dc.setPenWidth(1);
         // nothing near the top edge: the watch draws its own microphone sign there while it records
-        var notice = _flow.notice;
+        var notice = state == SelfReportFlow.SPEAK && _offline ? "No phone: kept on the watch" : _flow.notice;
         var feel = _feel;
         var text = notice.length() > 0;
         Draw.fitted(dc, text ? 32 : 40, headline, [Graphics.FONT_LARGE, Graphics.FONT_MEDIUM, Graphics.FONT_SMALL]);

@@ -114,8 +114,10 @@ function theStreamAfterAMicrophoneRestartJoinsTheSameRecording(logger as Logger)
     flow.captureEnded();
     var closed = flow.data([1]b) == SelfReportFlow.DATA_KEPT && flow.bytes == 1;
     var again = flow.resumed(0);
-    flow.data([2]b);
-    return closed && again && flow.state == SelfReportFlow.SPEAK && flow.bytes == 2 && flow.audio.size() == 2;
+    // its first data says the microphone is live again, once
+    var live = flow.data([2]b) == SelfReportFlow.DATA_FIRST;
+    var then = flow.data([3]b) == SelfReportFlow.DATA_KEPT;
+    return closed && again && live && then && flow.state == SelfReportFlow.SPEAK && flow.bytes == 3 && flow.audio.size() == 3;
 }
 
 (:test)
@@ -163,4 +165,16 @@ function aRecordingSplitForStorageKeepsEveryByteInOrder(logger as Logger) as Boo
     var parts = Outbox.split(bytes, 16384);
     return parts.size() == 3 && parts[0].size() == 16384 && parts[2].size() == 1 && parts[1][0] == bytes[16384]
         && parts[2][0] == bytes[32768] && Outbox.split(new [0]b, 16384).size() == 0;
+}
+
+(:test)
+function aRefusedRecordingOffersNoTryAgain(logger as Logger) as Boolean {
+    var flow = new SelfReportFlow();
+    flow.micStarted(0);
+    flow.data([1]b);
+    flow.press();
+    flow.captureEnded();
+    flow.sending();
+    flow.refuse("Request failed (http_422). The server refused the recording");
+    return flow.refused && flow.state == SelfReportFlow.BROKEN && flow.press() == SelfReportFlow.PRESS_NONE;
 }

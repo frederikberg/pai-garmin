@@ -89,7 +89,7 @@ class SelfReportFlow {
 
     enum {
         DATA_KEPT,
-        // the first data of the recording: the microphone is live
+        // the first data of the recording, or of the microphone started again: it is live
         DATA_FIRST,
         // the tail holds a full part
         DATA_PART,
@@ -112,7 +112,11 @@ class SelfReportFlow {
     var notice as String = "";
     // the watch's storage took no more: the recording stopped there
     var filled as Boolean = false;
+    // the server refused the recording for good: nothing more of it goes, and Start does nothing
+    var refused as Boolean = false;
     private var _captureOpen as Boolean = false;
+    // the microphone started again and has not delivered yet
+    private var _restarted as Boolean = false;
 
     // code as Recorder.start answers: 0 recording began, 1 the watch cannot capture Opus, 2 starting failed.
     function micStarted(code as Number) as Void {
@@ -152,6 +156,10 @@ class SelfReportFlow {
         bytes += chunk.size();
         if (state == WAIT) {
             state = SPEAK;
+            return DATA_FIRST;
+        }
+        if (_restarted && state == SPEAK) {
+            _restarted = false;
             return DATA_FIRST;
         }
         if (state != SPEAK) {
@@ -210,6 +218,7 @@ class SelfReportFlow {
     function resumed(code as Number) as Boolean {
         if (code == 0) {
             _captureOpen = true;
+            _restarted = true;
             return true;
         }
         _captureOpen = false;
@@ -217,6 +226,12 @@ class SelfReportFlow {
             broken("Microphone busy");
         }
         return false;
+    }
+
+    // The server will never take the recording.
+    function refuse(text as String) as Void {
+        refused = true;
+        broken(text);
     }
 
     // The microphone is done, or has been given up on: the request may go.

@@ -1189,3 +1189,16 @@ function aMicrophoneTheWatchStoppedMidTurnStartsAgainInTheSameTurn(logger as Log
     env.settle();
     return again && io.captures == 2 && env.audioBytes >= 5000 && env.indexOf("turn=1") >= 0 && env.indexOf("turn=2") < 0;
 }
+
+(:test)
+function aGapAnswersNextSeqAsTheSimulatorHandsItOverAFloat(logger as Logger) as Boolean {
+    var env = new FakeEnv();
+    var io = new FakeIo();
+    var c = Kit.opened(env, io);
+    c.chunk(Kit.silence(2500));
+    var first = env.onlyOpen().find("seq=0") != null;
+    // the server has chunk 0 already and expects 1
+    env.replyOnly(409, {"next_seq" => 1.0});
+    c.chunk(Kit.silence(2500));
+    return first && env.onlyOpen().find("seq=1") != null;
+}

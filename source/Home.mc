@@ -36,9 +36,30 @@ module Home {
         menu.addItem(new WatchUi.MenuItem("Weather", null, :weather, null));
         menu.addItem(new WatchUi.MenuItem("Alarm", null, :alarm, null));
         if (Toybox has :Audio) {
-            menu.addItem(new WatchUi.MenuItem("Self-report", null, :selfreport, null));
+            menu.addItem(new WatchUi.MenuItem("Self-report", waitingLabel(Outbox.count()), :selfreport, null));
         }
         return [menu, new HomeDelegate()];
+    }
+
+    // The Self-report entry's second line: how many recordings wait on the watch, none when none do.
+    function waitingLabel(count as Number) as String? {
+        return count > 0 ? count + " waiting" : null;
+    }
+
+    // The number of waiting recordings changed: the entry says so.
+    function showWaiting(count as Number) as Void {
+        var m = menu;
+        if (m == null) {
+            return;
+        }
+        var index = m.findItemById(:selfreport);
+        if (index >= 0) {
+            var item = m.getItem(index);
+            if (item != null) {
+                item.setSubLabel(waitingLabel(count));
+                redraw();
+            }
+        }
     }
 
     // Whether the app, back after a hide of hiddenMs, keeps the screen it had.

@@ -45,7 +45,7 @@
 // The self-report (POST /api/watch/self-report?id=<uuid>&part=<n>[&end=1]&feel=<heavy|okay|good>&at=<time>,
 // the body the next bytes of the Ogg Opus recording) takes the parts as docs/api.md describes: the
 // next part answers 200 {next_part}, a repeat 200 with the count it has, a gap 409, the end (body
-// empty or not) 202 {id}, and anything for a complete id 202 again. A part over 32 KiB or past the
+// empty or not) 202 {id, complete: true}, and anything for a complete id the same 202 again. A part over 32 KiB or past the
 // cap (SELF_REPORT_CAP bytes, default 8 MiB; GET /__stub/self-report-cap?bytes=<n>) answers 413.
 // Without part the upload is a whole recording, kept as complete. GET /__stub/self-reports lists
 // what arrived (parts, bytes, complete, and streams: the Ogg Opus streams in it, more than one after
@@ -580,7 +580,7 @@ Bun.serve({
       }
       const known = selfReports.get(id)
       if (known) known.tries++
-      if (known?.complete) return json({ id }, 202)
+      if (known?.complete) return json({ id, complete: true }, 202)
       if (partParam === null) {
         if (body.length === 0) return json({ detail: 'invalid' }, 422)
         selfReports.set(id, { id, feel, at, bytes: body.length, ogg, tries: 1, parts: 1, complete: true, streams: 0 })
@@ -601,7 +601,7 @@ Bun.serve({
       if (!end) return json({ next_part: report.parts })
       if (report.bytes === 0) return json({ detail: 'bad_audio' }, 422)
       report.complete = true
-      return json({ id }, 202)
+      return json({ id, complete: true }, 202)
     }
     if (path.startsWith('/api/watch/voice/call')) return callRoute(req, url, path)
     if (path === '/api/watch/weather' && req.method === 'GET') {
