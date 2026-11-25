@@ -6,6 +6,9 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ### Changed
 
+- A self-report has no length limit of its own: it goes to the server in 16 KiB parts while it is spoken (`docs/api.md`, Self-report; needs a server that takes parts) and ends by itself only shortly before the server's cap of 8 MiB, about 40 minutes. Without the phone the parts wait in the watch's storage until it is full, with room kept for the rest of the app; the recording then stops with *Storage full* on screen, and what was kept goes once the phone is back, also after a restart. Recordings kept by the earlier version go as parts.
+- After a notification or a short hide during a self-report the microphone starts again, in the same recording.
+- Back during a self-report recording sends what was recorded instead of dropping it.
 - After a short hide in the middle of a turn the microphone starts again, so speaking goes on in the same turn (needs a server that reads a second Ogg Opus stream in a turn).
 - After a long hide the menu is a fresh one, so its first entry is selected on the watch too.
 - A notification no longer ends a Computer call or a self-report recording. After a hide of less than ten seconds (the music controls, the watch face) every screen is as it was, the same call included. After ten seconds hidden a call sends the turn being spoken and hangs up, a recording is ended and sent, and the app comes back on its menu with its first entry selected. The screens are closed only once the app is back on screen, which also ends the crash after a long hide.
