@@ -82,9 +82,10 @@ class SelfReportMenuDelegate extends WatchUi.Menu2InputDelegate {
     }
 }
 
-// The recording screen: opening it starts the microphone, Start ends the recording and sends it
-// once, the server's answer buzzes and shows "Saved", and a few seconds later (or at Back) the
-// screen returns to the sub-app list. A failed send says so and Start sends the same recording again.
+// The recording screen: opening it starts the microphone, Start ends the recording and hands it to
+// the Outbox, which keeps it on the watch and sends it; the server's answer buzzes and shows "Saved",
+// and a few seconds later (or at Back) the screen returns to the sub-app list. A failed send says so,
+// Start sends again at once, and the Outbox keeps trying by itself after the screen is gone.
 // Toybox.Audio exists on some products only; the menu offers this sub-app where it does (Home),
 // and the checker skips the class so the other products build.
 (:typecheck(false))
@@ -98,7 +99,8 @@ class SelfReportView extends WatchUi.View {
     private var _feel as String?;
     private var _flow as SelfReportFlow = new SelfReportFlow();
     private var _recorder as Recorder;
-    private var _call as Call? = null;
+    // the recording is in the Outbox
+    private var _kept as Boolean = false;
     private var _timer as Timer.Timer = new Timer.Timer();
     private var _id as String = SelfReport.uuid();
     private var _at as Time.Moment = Time.now();
@@ -128,18 +130,29 @@ class SelfReportView extends WatchUi.View {
         WatchUi.requestUpdate();
     }
 
-    // Back: leaves and drops what was recorded, except while it is on its way, where the answer
-    // decides what the screen says (the request has its own time limit).
+    // Back: leaves. A recording still running is dropped, which is what Back during it means; one
+    // that ended is in the Outbox and goes on its own.
     function back() as Boolean {
-        if (_flow.state == SelfReportFlow.SENDING) {
-            return true;
-        }
         _left = true;
         cleanup();
         return false;
     }
 
+    // The screen closes without Back (the app came back from a long hide): what was recorded so far
+    // is kept and sent like a finished recording.
     function onHide() as Void {
+        if (!_left && !_kept && (_flow.capturing() || _flow.state == SelfReportFlow.STOPPING)) {
+            if (_flow.capturing()) {
+                _stopping = true;
+                _recorder.stop();
+                _stopping = false;
+            }
+            if (_flow.audio.size() > 0) {
+                Trace.add("self_report_kept", {"bytes" => _flow.audio.size()});
+                keep();
+                Outbox.send();
+            }
+        }
         _left = true;
         cleanup();
     }
@@ -151,10 +164,16 @@ class SelfReportView extends WatchUi.View {
             _recorder.stop();
             _stopping = false;
         }
-        var call = _call;
-        if (call != null) {
-            call.cancel();
-            _call = null;
+        if (_id.equals(Outbox.listenerId)) {
+            Outbox.listener = null;
+            Outbox.listenerId = null;
+        }
+    }
+
+    private function keep() as Void {
+        if (!_kept) {
+            _kept = true;
+            Outbox.put(_id, _feel, _at, _flow.audio);
         }
     }
 
@@ -216,21 +235,21 @@ class SelfReportView extends WatchUi.View {
     private function upload() as Void {
         _timer.stop();
         _flow.sending();
-        var call = new Call(method(:onUploaded));
-        _call = call;
-        Trace.add("self_report_upload", {"bytes" => _flow.audio.size(), "tries" => _flow.tries});
-        call.send(Api.selfReport(_id, _feel, _at, _flow.audio, _flow.tries));
+        keep();
+        Outbox.listener = method(:onUploaded);
+        Outbox.listenerId = _id;
+        // Start asks for it now, whatever retry was planned
+        Outbox.retryAt = 0;
+        Outbox.send();
         WatchUi.requestUpdate();
     }
 
     function onUploaded(outcome as Outcome) as Void {
-        _call = null;
-        _flow.result(outcome.isOk(), outcome.text());
+        _flow.result(outcome.isOk(), outcome.isOk() ? "" : outcome.text() + ". Kept on the watch, it goes by itself");
         if (outcome.isOk()) {
             cue(CallLogic.CUE_SENT);
             _timer.start(method(:leave), DONE_MS, false);
         } else {
-            Trace.add("self_report_failed", {"code" => outcome.code});
             cue(CallLogic.CUE_ERROR);
         }
         WatchUi.requestUpdate();

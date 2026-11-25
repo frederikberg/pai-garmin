@@ -1,6 +1,7 @@
 import Toybox.Application;
 import Toybox.Lang;
 import Toybox.System;
+import Toybox.Timer;
 import Toybox.WatchUi;
 
 (:glance)
@@ -9,6 +10,9 @@ class PaiApp extends Application.AppBase {
     private var _how as String = "";
     // the uptime clock when the app was last hidden, null while it is on screen
     private var _hiddenAt as Number? = null;
+    // closes the screens once the hide has lasted Home.KEEP_MS, so a call ends then and not only
+    // when the app is opened again
+    private var _hideTimer as Timer.Timer? = null;
 
     function initialize() {
         AppBase.initialize();
@@ -39,10 +43,25 @@ class PaiApp extends Application.AppBase {
         if (Trace.bornAt > 0) {
             _hiddenAt = System.getTimer();
             Trace.add("inactive", {"in_call" => Trace.active});
+            var timer = _hideTimer;
+            if (timer == null) {
+                timer = new Timer.Timer();
+                _hideTimer = timer;
+            }
+            timer.start(method(:onLongHide), Home.KEEP_MS, false);
         }
     }
 
-    // Back on screen: the menu again, as after a fresh start, unless a call was hidden only briefly.
+    (:typecheck(disableGlanceCheck))
+    function onLongHide() as Void {
+        if (_hiddenAt != null) {
+            Trace.add("hide_timeout", {"in_call" => Trace.active});
+            Home.reset();
+        }
+    }
+
+    // Back on screen: the screen it had after a short hide, the menu again, as after a fresh start,
+    // after a long one.
     (:typecheck(disableGlanceCheck))
     function onActive(state as Dictionary?) as Void {
         var at = _hiddenAt;
@@ -50,8 +69,12 @@ class PaiApp extends Application.AppBase {
             return;
         }
         _hiddenAt = null;
+        var timer = _hideTimer;
+        if (timer != null) {
+            timer.stop();
+        }
         var away = System.getTimer() - at;
-        var keep = Home.keepOnReturn(Trace.active, away);
+        var keep = Home.keepOnReturn(away);
         Trace.add("active", {"hidden_ms" => away, "in_call" => Trace.active, "kept" => keep});
         if (!keep) {
             Home.reset();
@@ -66,6 +89,10 @@ class PaiApp extends Application.AppBase {
         Trace.restore();
         Gate.arm();
         Trace.add("launch", {"how" => _how, "glance" => _fromGlance});
+        if (Outbox.pending()) {
+            // a self-report an earlier run could not send goes once the menu has settled
+            Idle.poke(Idle.DELAY_MS);
+        }
         return Home.create();
     }
 

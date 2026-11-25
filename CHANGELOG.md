@@ -6,7 +6,10 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ### Changed
 
-- The app comes back on its menu after it was hidden (the watch face, another app, recent apps, the glance list), with its first entry selected. A Computer call survives a hide of less than ten seconds; a longer one hangs it up.
+- After a hide of less than ten seconds (a notification, the music controls, the watch face) every screen is as it was. A longer hide closes the screens after ten seconds, a Computer call hangs up then, and the app comes back on its menu with its first entry selected.
+- A self-report recording is kept on the watch until the server has it and sent again by itself (every few seconds without a phone, every half minute after a server error, after Back and at the next start), never during a call; Back no longer drops a recording that ended. A recording whose screen closes after a long hide is kept and sent too.
+- A Computer call without a phone connection waits for it for up to a minute, keeps recording and taps once when the call is up.
+- The watch's log lines go to the server also when no call follows.
 - Opening the app sends nothing until a sub-app is chosen. The check for a ringing alarm runs only after the menu has stayed on screen for a second; a ringing alarm is stopped with one short buzz and no screen. The glance stops a ringing alarm it sees the same way.
 
 ### Added

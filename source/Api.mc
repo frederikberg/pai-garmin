@@ -1,5 +1,6 @@
 import Toybox.Communications;
 import Toybox.Lang;
+import Toybox.System;
 import Toybox.Time;
 
 // One call of the watch API. params is sent as a JSON body, or body as raw Ogg Opus audio instead;
@@ -8,11 +9,11 @@ import Toybox.Time;
 class Request {
     var method as Communications.HttpRequestMethod;
     var path as String;
-    var params as Dictionary<String, String>?;
+    var params as Dictionary<String, Object>?;
     var json as Boolean;
     var body as ByteArray? = null;
 
-    function initialize(method as Communications.HttpRequestMethod, path as String, params as Dictionary<String, String>?, json as Boolean) {
+    function initialize(method as Communications.HttpRequestMethod, path as String, params as Dictionary<String, Object>?, json as Boolean) {
         self.method = method;
         self.path = path;
         self.params = params;
@@ -47,6 +48,11 @@ module Api {
 
     function remove(id as String) as Request {
         return new Request(Communications.HTTP_REQUEST_METHOD_DELETE, ALARM + "/" + id, null, false);
+    }
+
+    // Log lines gathered with no call open; the answer is not read.
+    function appLog(batch as Number, lines as Array<Dictionary<String, Object>>) as Request {
+        return new Request(Communications.HTTP_REQUEST_METHOD_POST, LOG, {"batch" => batch, "sent_t" => System.getTimer(), "lines" => lines}, false);
     }
 
     function dismissAll() as Request {
