@@ -32,6 +32,17 @@ module Outbox {
     const SWEEP_MS = 200;
     // a storage write that took longer is always logged
     const SLOW_WRITE_MS = 200;
+    // a report whose next part has failed this long (seconds) goes behind the others, so newer
+    // recordings are not held up by one the server never takes
+    const STUCK_S = 259200;
+
+    enum {
+        WRITE_OK,
+        // the storage is full (StorageFullException)
+        WRITE_FULL,
+        // any other error of the store
+        WRITE_FAILED
+    }
 
     enum {
         APPEND_OK,
@@ -213,7 +224,19 @@ module Outbox {
         if (!keep(report, bytes)) {
             return APPEND_DEVICE;
         }
-        return stored() + 2 * PART_BYTES <= budget ? APPEND_OK : APPEND_BUDGET;
+        var learned = budget < BUDGET_BYTES;
+        if (learned && stored() > budget) {
+            // a part past the learned budget went in without an error: the watch has more room
+            budget = BUDGET_BYTES;
+            Storage.deleteValue(BUDGET_KEY);
+            Trace.add("self_report_budget_cleared", {"kept_bytes" => stored()});
+            learned = false;
+        }
+        if (stored() + 2 * PART_BYTES <= budget) {
+            return APPEND_OK;
+        }
+        // a learned budget is tried one part further while the reserve covers the recording's end
+        return learned && Storage.getValue(RESERVE_KEY) != null && stored() <= budget ? APPEND_OK : APPEND_BUDGET;
     }
 
     // The recording ended with tail as its last audio. A recording that never filled a part
@@ -250,12 +273,14 @@ module Outbox {
         var id = report["id"] as String;
         var n = report["parts"] as Number;
         report["parts"] = n + 1;
-        if (write(id, n, bytes)) {
+        var result = write(id, n, bytes);
+        if (result == WRITE_OK) {
             return true;
         }
-        if (Storage.getValue(RESERVE_KEY) != null) {
-            deviceFull();
-            if (write(id, n, bytes)) {
+        if (result == WRITE_FULL && Storage.getValue(RESERVE_KEY) != null) {
+            // freed parts still waiting for deletion would make the room it saw too small
+            deviceFull(trash.size() == 0);
+            if (write(id, n, bytes) == WRITE_OK) {
                 return false;
             }
         }
@@ -263,14 +288,18 @@ module Outbox {
         return false;
     }
 
-    function write(id as String, n as Number, bytes as ByteArray) as Boolean {
+    function write(id as String, n as Number, bytes as ByteArray) as Number {
         var t0 = System.getTimer();
         try {
             save();
             Storage.setValue(partKey(id, n), bytes);
+        } catch (ex instanceof Lang.StorageFullException) {
+            lastWriteMs = System.getTimer() - t0;
+            return WRITE_FULL;
         } catch (ex) {
             lastWriteMs = System.getTimer() - t0;
-            return false;
+            Trace.add("self_report_write_error", {"part" => n, "error" => ex.getErrorMessage()});
+            return WRITE_FAILED;
         }
         lastWriteMs = System.getTimer() - t0;
         var line = {"part" => n, "bytes" => bytes.size(), "ms" => lastWriteMs, "kept_bytes" => stored()};
@@ -279,23 +308,27 @@ module Outbox {
         } else {
             Trace.debug("self_report_stored", line);
         }
-        return true;
+        return WRITE_OK;
     }
 
-    // The storage refused a write: the reserve goes, and what the parts take now, less the
-    // reserve, is the budget from here on.
-    function deviceFull() as Void {
-        var learned = stored() - RESERVE_PARTS * PART_BYTES;
-        if (learned < MIN_BUDGET_BYTES) {
-            learned = MIN_BUDGET_BYTES;
-        }
+    // The storage is full: the reserve goes, and when nothing waits for deletion, what the parts
+    // take now, less the reserve, is the budget from here on (until a recording passes it, append).
+    function deviceFull(learn as Boolean) as Void {
         for (var i = 0; i < RESERVE_PARTS; i++) {
             Storage.deleteValue(RESERVE_KEY + ":" + i);
         }
         Storage.deleteValue(RESERVE_KEY);
+        if (!learn) {
+            return;
+        }
+        var learned = stored() - RESERVE_PARTS * PART_BYTES;
+        if (learned < MIN_BUDGET_BYTES) {
+            learned = MIN_BUDGET_BYTES;
+        }
         if (learned < budget) {
             budget = learned;
         }
+        Trace.add("self_report_budget_learned", {"bytes" => budget});
         try {
             Storage.setValue(BUDGET_KEY, budget);
         } catch (ex) {
@@ -381,7 +414,7 @@ module Outbox {
         var ok = outcome.isOk();
         if (report == null) {
             // forgotten while the request was out: nothing to change
-        } else if (ok && (complete || end)) {
+        } else if (ok && complete) {
             // the end was taken, or the server has the recording complete already
             Trace.add("self_report_sent", {"part" => part});
             forget(id);
@@ -394,6 +427,11 @@ module Outbox {
             } else {
                 Trace.debug("self_report_part", line);
             }
+        } else if (lostOnServer(report, outcome)) {
+            // the server lost the whole recording: what is left of it cannot start one
+            Trace.add("outbox_lost_on_server", {"id" => id, "sent" => report["sent"] as Number});
+            Idle.urgent = true;
+            forget(id);
         } else if (resumeAt(report, outcome)) {
             // the server lacks parts the watch already deleted: the rest goes on from its count, and
             // the screen hears no failure
@@ -416,6 +454,7 @@ module Outbox {
                 save();
             } catch (ex) {
             }
+            stuck(report, part);
             var wait = retryMs(outcome, report["tries"] as Number);
             retryAt = System.getTimer() + wait;
             Idle.poke(wait);
@@ -448,6 +487,7 @@ module Outbox {
         }
         report["sent"] = upTo;
         report["tries"] = 0;
+        report.remove("failing_since");
         try {
             save();
         } catch (ex) {
@@ -458,15 +498,66 @@ module Outbox {
         }
     }
 
+    // The server's count in a 409 answer, or null when the body did not come.
+    function gapCount(outcome as Outcome) as Number? {
+        if (!"http_409".equals(outcome.code)) {
+            return null;
+        }
+        var body = outcome.body;
+        return Outcome.number(body != null ? body["next_part"] as Object? : null);
+    }
+
+    // A 409 saying the server has nothing of a recording the watch already sent parts of: the
+    // next stored part does not begin the audio, so it cannot become part 0.
+    function lostOnServer(report as Dictionary<String, Object?>, outcome as Outcome) as Boolean {
+        var m = gapCount(outcome);
+        return m != null && m == 0 && (report["sent"] as Number) > 0;
+    }
+
+    // The part of a report has failed since when (wall clock, so across launches); after STUCK_S
+    // the report goes behind the others that are done, and its clock starts again.
+    function stuck(report as Dictionary<String, Object?>, part as Number) as Void {
+        var now = Time.now().value();
+        var since = report["failing_since"];
+        if (!(since instanceof Number)) {
+            report["failing_since"] = now;
+        } else if (now - since >= STUCK_S && moveBack(report)) {
+            Trace.add("self_report_moved_back", {"id" => report["id"] as String, "part" => part, "failing_s" => now - since});
+            report["failing_since"] = now;
+        }
+        try {
+            save();
+        } catch (ex) {
+        }
+    }
+
+    // The report moves behind every other report that is done (a running recording stays last).
+    function moveBack(report as Dictionary<String, Object?>) as Boolean {
+        var rest = [] as Array<Dictionary<String, Object?>>;
+        var live = [] as Array<Dictionary<String, Object?>>;
+        for (var i = 0; i < reports.size(); i++) {
+            var r = reports[i];
+            if (r != report) {
+                if (isDone(r)) {
+                    rest.add(r);
+                } else {
+                    live.add(r);
+                }
+            }
+        }
+        if (rest.size() == 0) {
+            return false;
+        }
+        rest.add(report);
+        reports = rest.addAll(live);
+        return true;
+    }
+
     // A gap (409) whose answer names the server's count m below the part sent: the watch deleted
     // the parts between when they were confirmed, so that slice is lost, and the next stored part
     // goes under the number m. Without the count the part is tried again like any failure.
     function resumeAt(report as Dictionary<String, Object?>, outcome as Outcome) as Boolean {
-        if (!"http_409".equals(outcome.code)) {
-            return false;
-        }
-        var body = outcome.body;
-        var m = Outcome.number(body != null ? body["next_part"] as Object? : null);
+        var m = gapCount(outcome);
         var sent = report["sent"] as Number;
         if (m == null || m < 0 || m >= sent) {
             return false;
@@ -475,6 +566,7 @@ module Outbox {
         report["gaps"] = (report["gaps"] as Number) + sent - m;
         report["sent"] = m;
         report["tries"] = 0;
+        report.remove("failing_since");
         try {
             save();
         } catch (ex) {

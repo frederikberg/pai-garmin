@@ -47,6 +47,13 @@ module OutboxKit {
         }
     }
 
+    // The server has the recording complete.
+    function complete() as Outcome {
+        var o = new Outcome(Outcome.OK);
+        o.data = {"id" => "r", "complete" => true};
+        return o;
+    }
+
     function answer(next as Number?) as Outcome {
         var o = new Outcome(Outcome.OK);
         o.data = next == null ? {"id" => "r"} : {"next_part" => next.toFloat()};
@@ -139,7 +146,7 @@ function aConfirmedPartLeavesTheStorageAndTheNextFollows(logger as Logger) as Bo
 function theServersAcceptanceOfTheEndForgetsTheReport(logger as Logger) as Boolean {
     OutboxKit.fresh();
     Outbox.finish("r", null, new Time.Moment(100), [1]b, false);
-    Outbox.answered("r", 0, true, OutboxKit.answer(null));
+    Outbox.answered("r", 0, true, OutboxKit.complete());
     OutboxKit.swept();
     var ok = !Outbox.holds("r") && !OutboxKit.stored("r", 0) && Storage.getValue(Outbox.KEY) == null;
     OutboxKit.clear();
@@ -322,7 +329,7 @@ function theFirstFullStorageFreesTheReserveAndTeachesTheBudget(logger as Logger)
     Outbox.open("r", null, new Time.Moment(100));
     var reserved = Storage.getValue(Outbox.RESERVE_KEY) != null && Storage.getValue(Outbox.RESERVE_KEY + ":0") instanceof ByteArray;
     Outbox.reports.add(OutboxKit.report("old", 10, 0, true));
-    Outbox.deviceFull();
+    Outbox.deviceFull(true);
     var freed = Storage.getValue(Outbox.RESERVE_KEY) == null && Storage.getValue(Outbox.RESERVE_KEY + ":1") == null;
     var learned = Storage.getValue(Outbox.BUDGET_KEY);
     var taught = learned instanceof Number && learned == (10 - Outbox.RESERVE_PARTS) * Outbox.PART_BYTES && Outbox.budget == learned;
@@ -365,4 +372,79 @@ function aGapGoesOnFromTheServersCountWithTheNextStoredPart(logger as Logger) as
     ok = ok && OutboxKit.goes(report, 2, 1) && !OutboxKit.stored("r", 3);
     OutboxKit.clear();
     return ok;
+}
+
+(:test)
+function aRepeatedLastPartTheServerOnlyCountsIsFollowedByTheEnd(logger as Logger) as Boolean {
+    OutboxKit.fresh();
+    Outbox.finish("r", null, new Time.Moment(100), [1]b, false);
+    // the server had the part already and ignores its end: it answers its count
+    Outbox.answered("r", 0, true, OutboxKit.answer(1));
+    var report = Outbox.find("r");
+    var ok = Outbox.holds("r") && OutboxKit.goes(report, 1, 1) && !OutboxKit.stored("r", 0);
+    Outbox.answered("r", 1, true, OutboxKit.complete());
+    ok = ok && !Outbox.holds("r");
+    OutboxKit.clear();
+    return ok;
+}
+
+(:test)
+function aServerThatLostTheWholeRecordingDropsIt(logger as Logger) as Boolean {
+    OutboxKit.fresh();
+    Outbox.reports.add(OutboxKit.report("r", 4, 2, true));
+    Storage.setValue(Outbox.partKey("r", 2), [1]b);
+    Storage.setValue(Outbox.partKey("r", 3), [2]b);
+    var lost = Outcome.failed("http_409");
+    lost.body = {"next_part" => 0.0};
+    Outbox.answered("r", 2, false, lost);
+    OutboxKit.swept();
+    var ok = !Outbox.holds("r") && !OutboxKit.stored("r", 2) && !OutboxKit.stored("r", 3);
+    OutboxKit.clear();
+    return ok;
+}
+
+(:test)
+function aFullStorageWithPartsStillToDeleteTeachesNoBudget(logger as Logger) as Boolean {
+    OutboxKit.fresh();
+    Outbox.open("r", null, new Time.Moment(100));
+    Outbox.reports.add(OutboxKit.report("old", 10, 0, true));
+    Outbox.deviceFull(false);
+    var ok = Storage.getValue(Outbox.RESERVE_KEY) == null && Storage.getValue(Outbox.BUDGET_KEY) == null && Outbox.budget == Outbox.BUDGET_BYTES;
+    OutboxKit.clear();
+    return ok;
+}
+
+(:test)
+function aRecordingPastTheLearnedBudgetWithoutAnErrorClearsIt(logger as Logger) as Boolean {
+    OutboxKit.fresh();
+    Outbox.budget = 4 * Outbox.PART_BYTES;
+    Storage.setValue(Outbox.BUDGET_KEY, Outbox.budget);
+    Outbox.open("r", null, new Time.Moment(100));
+    var codes = [] as Array<Number>;
+    for (var i = 0; i < 5; i++) {
+        codes.add(Outbox.append("r", new [16]b));
+    }
+    // the reserve covers the end, so the learned budget is tried one part further, and that part went in
+    var goes = codes[2] == Outbox.APPEND_OK && codes[3] == Outbox.APPEND_OK && codes[4] == Outbox.APPEND_OK;
+    var ok = goes && Outbox.budget == Outbox.BUDGET_BYTES && Storage.getValue(Outbox.BUDGET_KEY) == null;
+    OutboxKit.clear();
+    return ok;
+}
+
+(:test)
+function aReportFailingForDaysGoesBehindTheOthers(logger as Logger) as Boolean {
+    OutboxKit.fresh();
+    Outbox.reports.add(OutboxKit.report("a", 1, 0, true));
+    Outbox.reports.add(OutboxKit.report("b", 1, 0, true));
+    Storage.setValue(Outbox.partKey("a", 0), [1]b);
+    Outbox.answered("a", 0, true, Outcome.failed("http_409"));
+    var first = Outbox.reports[0]["id"];
+    var stays = first instanceof String && first.equals("a");
+    Outbox.reports[0]["failing_since"] = Time.now().value() - Outbox.STUCK_S;
+    Outbox.answered("a", 0, true, Outcome.failed("http_409"));
+    var head = Outbox.reports[0]["id"];
+    var last = Outbox.reports[1]["id"];
+    var moved = head instanceof String && head.equals("b") && last instanceof String && last.equals("a");
+    OutboxKit.clear();
+    return stays && moved;
 }
