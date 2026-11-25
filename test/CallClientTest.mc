@@ -1137,3 +1137,18 @@ function aPhoneThatStaysAwayEndsTheWaitAfterAMinute(logger as Logger) as Boolean
     }
     return c.stalled != null;
 }
+
+(:test)
+function aLongHideSendsTheTurnBeingSpokenBeforeTheCallHangsUp(logger as Logger) as Boolean {
+    var env = new FakeEnv();
+    var io = new FakeIo();
+    var c = Kit.opened(env, io);
+    c.chunk(Kit.silence(2500));
+    env.replyOnly(200, {});
+    c.endAfterTurn();
+    c.captureEnded();
+    // the turn's press goes, and the call is still up until the server has it
+    var pressed = env.onlyOpen().find("/command") != null && env.indexEnding("/c1") < 0;
+    env.replyOnly(200, {});
+    return pressed && env.indexEnding("/c1") >= 0;
+}

@@ -9,8 +9,8 @@ class PaiApp extends Application.AppBase {
     private var _how as String = "";
     // the uptime clock when the app was last hidden, null while it is on screen
     private var _hiddenAt as Number? = null;
-    // closes the screens once the hide has lasted Home.KEEP_MS, so a call ends then and not only
-    // when the app is opened again
+    // tells the sub-app screen once the hide has lasted Home.KEEP_MS, so a call ends then and not
+    // only when the app is opened again
     private var _hideJob as Number = 0;
 
     function initialize() {
@@ -41,18 +41,24 @@ class PaiApp extends Application.AppBase {
     function onInactive(state as Dictionary?) as Void {
         if (Trace.bornAt > 0) {
             _hiddenAt = System.getTimer();
+            Home.covered = true;
             Trace.add("inactive", {"in_call" => Trace.active});
             Later.cancel(_hideJob);
             _hideJob = Later.at(Home.KEEP_MS, method(:onLongHide));
         }
     }
 
-    (:typecheck(disableGlanceCheck))
+    // The screens stay as they are while hidden (the watch takes no change of them then): the
+    // sub-app on screen only ends what it runs, and the menu shows when the app is back.
+    (:typecheck(false))
     function onLongHide() as Void {
         _hideJob = 0;
         if (_hiddenAt != null) {
             Trace.add("hide_timeout", {"in_call" => Trace.active});
-            Home.reset();
+            var target = Home.target;
+            if (target != null && target has :hiddenTooLong) {
+                target.hiddenTooLong();
+            }
         }
     }
 
@@ -65,12 +71,15 @@ class PaiApp extends Application.AppBase {
             return;
         }
         _hiddenAt = null;
+        Home.covered = false;
         Later.cancel(_hideJob);
         _hideJob = 0;
         var away = System.getTimer() - at;
         var keep = Home.keepOnReturn(away);
         Trace.add("active", {"hidden_ms" => away, "in_call" => Trace.active, "kept" => keep});
-        if (!keep) {
+        if (keep) {
+            Home.closePending();
+        } else {
             Home.reset();
             Gate.arm();
         }

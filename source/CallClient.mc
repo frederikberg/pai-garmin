@@ -141,6 +141,8 @@ class CallClient {
     const MEM_EVERY_MS = 15000;
     // a hang-up waits at most this long for the server to hear it
     const HANG_GRACE_MS = 2000;
+    // a turn sent because the app was hidden too long waits at most this long for the server
+    const HANG_AFTER_TURN_MS = 20000;
     // the open is tried this often before the call is given up
     const OPEN_TRIES = 5;
     // while the phone link is missing the open waits this long for it, asking every PHONE_POLL_MS
@@ -239,6 +241,9 @@ class CallClient {
     private var _openMs as Number = -1;
     // when the open first found no phone link, -1 while it has one
     private var _noPhoneSince as Number = -1;
+    // the app was hidden too long: the turn being spoken goes as a press, then the call hangs up;
+    // -1 while not
+    private var _hangAfterTurnAt as Number = -1;
     private var _pieceN as Number = 0;
     private var _gapMax as Number = 0;
     private var _starvedN as Number = 0;
@@ -408,6 +413,21 @@ class CallClient {
     function bye() as Void {
         if (!_closing) {
             _io.cue.invoke(CallLogic.CUE_BYE);
+        }
+        hangUp();
+    }
+
+    // The app was hidden for too long: what is being said goes to the server as the turn, so it is
+    // not lost, and the call hangs up once the server has the press (or after HANG_AFTER_TURN_MS).
+    function endAfterTurn() as Void {
+        if (_closing || _hangAfterTurnAt >= 0) {
+            return;
+        }
+        if (recording && _turnBytes > 0 && _call != null) {
+            Trace.add("end_after_turn", {"bytes" => _turnBytes});
+            _hangAfterTurnAt = _env.now();
+            press();
+            return;
         }
         hangUp();
     }
@@ -857,6 +877,9 @@ class CallClient {
             _sentMs = _env.now() - _pressAt;
         }
         _failStreak = 0;
+        if (_hangAfterTurnAt >= 0) {
+            hangUp();
+        }
     }
 
     // The answer is cut: playback stops now, the press goes out, and the next turn is recorded.
@@ -897,6 +920,9 @@ class CallClient {
             Trace.add("stall", {"gap_ms" => now - _lastTick});
         }
         _lastTick = now;
+        if (_hangAfterTurnAt >= 0 && !_closing && now - _hangAfterTurnAt > HANG_AFTER_TURN_MS) {
+            hangUp();
+        }
         for (var i = 0; i < _lanes.size(); i++) {
             var lane = _lanes[i];
             if (lane.busy && now - lane.sentAt > lane.watchdogMs) {
