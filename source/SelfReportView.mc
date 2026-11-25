@@ -101,6 +101,8 @@ class SelfReportView extends WatchUi.View {
     private var _recorder as Recorder;
     // the recording is in the Outbox
     private var _kept as Boolean = false;
+    // Start asked for the send the next answer is about: only that one sounds the error
+    private var _asked as Boolean = false;
     private var _timer as Timer.Timer = new Timer.Timer();
     private var _id as String = SelfReport.uuid();
     private var _at as Time.Moment = Time.now();
@@ -133,6 +135,11 @@ class SelfReportView extends WatchUi.View {
     // Back: leaves. A recording still running is dropped, which is what Back during it means; one
     // that ended is in the Outbox and goes on its own.
     function back() as Boolean {
+        if (_flow.state == SelfReportFlow.STOPPING && _flow.audio.size() > 0) {
+            // Start already ended it: the rest of the stop is not waited for
+            keep();
+            Outbox.send();
+        }
         _left = true;
         cleanup();
         return false;
@@ -238,18 +245,27 @@ class SelfReportView extends WatchUi.View {
         keep();
         Outbox.listener = method(:onUploaded);
         Outbox.listenerId = _id;
+        _asked = true;
         // Start asks for it now, whatever retry was planned
         Outbox.retryAt = 0;
         Outbox.send();
         WatchUi.requestUpdate();
     }
 
+    // An answer from the Outbox: about this recording, or a failure of an older one it waits behind.
     function onUploaded(outcome as Outcome) as Void {
-        _flow.result(outcome.isOk(), outcome.isOk() ? "" : outcome.text() + ". Kept on the watch, it goes by itself");
+        var mine = _kept && Outbox.holds(_id);
+        if (outcome.isOk() && mine) {
+            // an older one went through; this one follows
+            return;
+        }
+        var asked = _asked;
+        _asked = false;
+        _flow.result(outcome.isOk(), outcome.isOk() ? "" : outcome.text() + (mine ? ". Kept on the watch, it goes by itself" : ""));
         if (outcome.isOk()) {
             cue(CallLogic.CUE_SENT);
             _timer.start(method(:leave), DONE_MS, false);
-        } else {
+        } else if (asked) {
             cue(CallLogic.CUE_ERROR);
         }
         WatchUi.requestUpdate();

@@ -46,9 +46,9 @@ function anOpenGateLetsACallStraightThrough(logger as Logger) as Boolean {
 function aSubAppChosenWithinTheIdleTimeSkipsTheCheck(logger as Logger) as Boolean {
     Gate.open = true;
     Gate.arm();
-    var armed = Gate.idle != null;
+    var armed = Gate.idle != 0;
     Gate.disarm();
-    return armed && Gate.idle == null && Gate.open;
+    return armed && Gate.idle == 0 && Gate.open;
 }
 
 (:test)

@@ -16,6 +16,8 @@ module Home {
 
     var menu as WatchUi.Menu2? = null;
     var resetsLeft as Number = 0;
+    // a reset is closing screens: a second one waits for it rather than popping the same screen again
+    var resetting as Boolean = false;
 
     function create() as [WatchUi.Menu2, WatchUi.Menu2InputDelegate] {
         var menu = new WatchUi.Menu2({:title => "PAI"});
@@ -41,14 +43,16 @@ module Home {
     // selected, so it is moved back to the first.
     function reset() as Void {
         resetsLeft = MAX_DEPTH;
-        new HomeReset().step();
+        if (!resetting) {
+            resetting = true;
+            new HomeReset().step();
+        }
     }
 }
 
 class HomeReset {
     const TICK_MS = 50;
 
-    private var _timer as Timer.Timer = new Timer.Timer();
     // the screen popped last, which may still be on top for a tick
     private var _popped as WatchUi.View? = null;
 
@@ -59,6 +63,7 @@ class HomeReset {
             if (menu != null) {
                 menu.setFocus(0);
             }
+            Home.resetting = false;
             WatchUi.requestUpdate();
             return;
         }
@@ -67,7 +72,7 @@ class HomeReset {
             _popped = current;
             WatchUi.popView(WatchUi.SLIDE_IMMEDIATE);
         }
-        _timer.start(method(:step), TICK_MS, false);
+        Later.at(TICK_MS, method(:step));
     }
 }
 

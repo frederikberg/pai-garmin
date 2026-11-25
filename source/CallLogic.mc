@@ -175,7 +175,12 @@ module Trace {
     function persist() as Void {
         var t0 = System.getTimer();
         var keep = lines.size() > STORE_LINES ? lines.slice(lines.size() - STORE_LINES, null) : lines;
-        Storage.setValue(STORE_KEY, keep as Array<Storage.ValueType>);
+        try {
+            Storage.setValue(STORE_KEY, keep as Array<Storage.ValueType>);
+        } catch (ex) {
+            // a full store loses these lines, never the app
+            return;
+        }
         debug("persist", {"ms" => System.getTimer() - t0, "lines" => keep.size()});
     }
 

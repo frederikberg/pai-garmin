@@ -68,9 +68,10 @@ class ComputerView extends WatchUi.View {
         WatchUi.requestUpdate();
     }
 
-    // Leaving the screen ends the call, except for the menu opened on top of it.
+    // Leaving the screen ends the call, except for the menu opened on top of it; closed by a reset
+    // after a long hide it always ends, whether or not the menu above it was seen to close.
     function onHide() as Void {
-        if (!_keepCall) {
+        if (!_keepCall || Home.resetting) {
             _left = true;
             _client.hangUp();
         }
