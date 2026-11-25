@@ -12,7 +12,7 @@ Times are ISO 8601 in UTC with an offset, for example `2026-11-16T07:30:00+00:00
 | `DELETE /api/watch/alarm/{id}` | none | `200` with `{}` |
 | `POST /api/watch/alarm/dismiss` | none | `200` with `{}`, stops every ringing alarm |
 | `GET /api/watch/weather` | none | `200` with the weather below |
-| `POST /api/watch/self-report?id=…&part=…&feel=…&at=…` | the next part of the recorded audio, see Self-report | `200` with `{"next_part": <n>}`, `202` with `{"id": "<id>"}` for the last |
+| `POST /api/watch/self-report?id=…&part=…&feel=…&at=…` | the next part of the recorded audio, see Self-report | `200` with `{"next_part": <n>}`, `200` with `{"id": "<id>", "complete": true}` for the last |
 | `POST /api/watch/log` | `{"lines": [...]}`, see Watch log | `200 {}` |
 | `POST /api/watch/voice/call` and the routes below it | see Computer call | the Computer call |
 
@@ -115,7 +115,7 @@ A spoken self-report: the face the wearer picked (or none, when skipped) and wha
 Answers:
 
 - `200 {"next_part": <n + 1>}`: part `n` is stored, more is expected. A repeat of a part the server already has (`n` below its count) answers `200` with the count it has and appends nothing; the watch goes on from `next_part`.
-- `202 {"id": "<id>", "complete": true}`: the last part is stored and the recording is complete; turning the audio into a report happens afterwards. Any part, last or not, for an id the server already has complete (or already as a report) answers the same, and the watch drops what it still holds of it. Only `"complete": true` completes a report on the watch: a `200 {"next_part"}` to a repeated last part (the server had it already and ignores its `end`) is a count like any other, and the empty last part follows it. A `2xx` with neither counts as a failure.
+- `200 {"id": "<id>", "complete": true}`: the last part is stored and the recording is complete; turning the audio into a report happens afterwards. Any part, last or not, for an id the server already has complete (or already as a report) answers the same, and the watch drops what it still holds of it. Only `"complete": true` completes a report on the watch: a `200 {"next_part"}` to a repeated last part (the server had it already and ignores its `end`) is a count like any other, and the empty last part follows it. A `2xx` with neither counts as a failure. The answer is a `200`, never a `202`: on the watch the body of a `202` does not reach the app.
 - `409 {"next_part": <count>}`: a gap, `n` above what the server has (also any part above 0 for an id it does not know). The watch deleted the parts between when the server confirmed them, so that slice is lost: it goes on with its next stored part under the number `next_part`, and the rest of the recording follows. A `409` whose body does not reach the watch is tried again like any failure. A `409` with `next_part` 0 for a recording the watch already sent parts of means the server lost all of it; the parts left do not begin the audio, so the watch drops the report.
 - `413`: a part over 32 KiB, or the recording would pass the server's cap of 8 MiB of audio (about 40 minutes). The watch ends a recording itself shortly before 8 MiB, so this is a safety net: the report then ends with what the server has, by an empty last part.
 - `422`: the audio cannot be decoded or the parameters are wrong. It is the one answer after which the watch drops the report.
