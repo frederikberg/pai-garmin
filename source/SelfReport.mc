@@ -174,8 +174,10 @@ class SelfReportFlow {
         state = SENDING;
     }
 
+    // An answer about the recording: the one the screen waits for, or one of the Outbox's own tries
+    // while the screen shows the failure.
     function result(ok as Boolean, text as String) as Void {
-        if (state == SENDING) {
+        if (state == SENDING || state == FAILED) {
             state = ok ? DONE : FAILED;
             notice = ok ? "" : text;
         }

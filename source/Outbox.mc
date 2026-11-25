@@ -2,7 +2,6 @@ import Toybox.Application.Storage;
 import Toybox.Lang;
 import Toybox.System;
 import Toybox.Time;
-import Toybox.Timer;
 
 // Self-reports the server has not confirmed yet. A recording is put here when it ends, saved on the
 // watch in parts (a stored value holds at most 32 KB), and sent until the server takes it: at once,
@@ -42,6 +41,15 @@ module Outbox {
         }
     }
 
+    function holds(id as String) as Boolean {
+        for (var i = 0; i < reports.size(); i++) {
+            if (id.equals(reports[i]["id"])) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     function pending() as Boolean {
         load();
         return reports.size() > 0;
@@ -64,8 +72,11 @@ module Outbox {
             }
             save();
         } catch (ex) {
-            // the watch keeps it only while the app runs
+            // the watch keeps it only while the app runs; parts already written would take space nobody frees
             Trace.add("outbox_unsaved", {"error" => ex.getErrorMessage()});
+            for (var i = 0; i < parts.size(); i++) {
+                Storage.deleteValue(partKey(id, i));
+            }
         }
     }
 
@@ -76,8 +87,7 @@ module Outbox {
             return;
         }
         if (Trace.active) {
-            // after the call
-            Idle.poke(10000);
+            // the call's end pokes Idle
             return;
         }
         var report = reports[0];
@@ -99,21 +109,34 @@ module Outbox {
 
     function answered(id as String, outcome as Outcome) as Void {
         inFlight = null;
+        var failures = 0;
         if (outcome.isOk()) {
             Trace.add("self_report_sent", {});
+            forget(id);
+        } else if (refused(outcome)) {
+            // the server will never take this one (undecodable audio): it would block the rest
+            Trace.add("self_report_refused", {"code" => outcome.code});
+            Idle.urgent = true;
             forget(id);
         } else {
             Trace.add("self_report_failed", {"code" => outcome.code});
             Idle.urgent = true;
+            for (var i = 0; i < reports.size(); i++) {
+                if (id.equals(reports[i]["id"])) {
+                    failures = reports[i]["tries"] as Number;
+                }
+            }
             try {
                 save();
             } catch (ex) {
             }
-            retryAt = System.getTimer() + retryMs(outcome);
-            Idle.poke(retryMs(outcome));
+            var wait = retryMs(outcome, failures);
+            retryAt = System.getTimer() + wait;
+            Idle.poke(wait);
         }
+        // the screen hears about its own report, and about any failure, since its report waits behind it
         var l = listener;
-        if (l != null && id.equals(listenerId)) {
+        if (l != null && (id.equals(listenerId) || !outcome.isOk())) {
             l.invoke(outcome);
         }
         if (outcome.isOk() && reports.size() > 0) {
@@ -122,9 +145,25 @@ module Outbox {
     }
 
     // The next try: soon while only the phone link is missing (checking it sends nothing), later
-    // when the server or the link failed.
-    function retryMs(outcome as Outcome) as Number {
-        return "no_phone".equals(outcome.code) ? 5000 : 30000;
+    // when the server or the link failed, and longer with every failure in a row (an upload that
+    // timed out may still be on its way), up to ten minutes.
+    function retryMs(outcome as Outcome, failures as Number) as Number {
+        if ("no_phone".equals(outcome.code)) {
+            return 5000;
+        }
+        var wait = 30000;
+        for (var i = 1; i < failures && wait < 600000; i++) {
+            wait *= 2;
+        }
+        return wait < 600000 ? wait : 600000;
+    }
+
+    // A status the server answers the same way however often it is asked: a 4xx other than a
+    // rejected key (which the owner fixes in the settings), a timeout or too many requests.
+    function refused(outcome as Outcome) as Boolean {
+        var code = outcome.code;
+        return outcome.kind == Outcome.FAILED && code != null && code.find("http_4") == 0
+            && !code.equals("http_401") && !code.equals("http_408") && !code.equals("http_429");
     }
 
     function audioOf(report as Dictionary<String, Object?>) as ByteArray? {
@@ -214,32 +253,30 @@ module Idle {
 
     // requests of the screen in flight (Call counts them)
     var busy as Number = 0;
-    var timer as Timer.Timer? = null;
+    // the job in Later, 0 when none waits
+    var job as Number = 0;
+    // the uptime clock before which no log goes, after a failed one
+    var logRetryAt as Number = 0;
+    // a call began while a log request was out: its answer must not confirm lines the call took
+    var logStale as Boolean = false;
     var logOut as Boolean = false;
     // a line worth sending soon was written (a failed upload): the log goes without waiting for a full batch
     var urgent as Boolean = false;
     var logBatch as Number = 0;
 
     function poke(ms as Number) as Void {
-        var t = timer;
-        if (t == null) {
-            t = new Timer.Timer();
-            timer = t;
-        }
-        t.stop();
-        t.start(new IdleRun().method(:run), ms, false);
+        Later.cancel(job);
+        job = Later.at(ms, new IdleRun().method(:run));
     }
 
     function run() as Void {
+        job = 0;
         if (busy > 0 || !Gate.open) {
             poke(DELAY_MS);
             return;
         }
         if (Trace.active) {
-            // a call carries the log itself; a waiting self-report goes after it
-            if (Outbox.pending()) {
-                poke(10000);
-            }
+            // a call carries the log itself; its end pokes again
             return;
         }
         if (!System.getDeviceSettings().phoneConnected) {
@@ -256,7 +293,7 @@ module Idle {
             }
             poke(wait);
         }
-        if (!logOut && (Trace.lines.size() >= LOG_BATCH || urgent && Trace.lines.size() > 0)) {
+        if (!logOut && System.getTimer() >= logRetryAt && (Trace.lines.size() >= LOG_BATCH || urgent && Trace.lines.size() > 0)) {
             urgent = false;
             sendLog();
         }
@@ -264,6 +301,7 @@ module Idle {
 
     function sendLog() as Void {
         logOut = true;
+        logStale = false;
         logBatch += 1;
         var count = Trace.lines.size() < LOG_BATCH ? Trace.lines.size() : LOG_BATCH;
         var lines = Trace.batch(count);
@@ -273,8 +311,12 @@ module Idle {
 
     function logged(count as Number, outcome as Outcome) as Void {
         logOut = false;
+        if (!outcome.isOk()) {
+            logRetryAt = System.getTimer() + 60000;
+            return;
+        }
         // a call that began meanwhile carries the lines itself
-        if (outcome.isOk() && !Trace.active) {
+        if (!Trace.active && !logStale) {
             Trace.confirm(count);
             if (Trace.lines.size() >= LOG_BATCH) {
                 poke(DELAY_MS);

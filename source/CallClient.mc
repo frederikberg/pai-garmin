@@ -327,6 +327,7 @@ class CallClient {
         Trace.add("device", {"part" => device.partNumber, "fw" => device.firmwareVersion, "audio" => Toybox has :Audio});
         Trace.debugOn = _env.debugLog();
         Trace.active = true;
+        Idle.logStale = true;
         _env.startClock(method(:tick), TICK_MS);
         // listening begins before the call exists; the audio is kept until it does, and the open
         // goes out once the microphone has delivered
@@ -947,6 +948,8 @@ class CallClient {
         if (heard || now - _closedAt > HANG_GRACE_MS) {
             _closedSaid = true;
             Trace.active = false;
+            // a self-report or log lines waiting go now that the call is over
+            Idle.poke(Idle.DELAY_MS);
             _env.stopClock();
             Trace.add("hangup_done", {"heard" => heard});
             _io.closed.invoke();

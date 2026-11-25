@@ -1,7 +1,6 @@
 import Toybox.Application;
 import Toybox.Lang;
 import Toybox.System;
-import Toybox.Timer;
 import Toybox.WatchUi;
 
 (:glance)
@@ -12,7 +11,7 @@ class PaiApp extends Application.AppBase {
     private var _hiddenAt as Number? = null;
     // closes the screens once the hide has lasted Home.KEEP_MS, so a call ends then and not only
     // when the app is opened again
-    private var _hideTimer as Timer.Timer? = null;
+    private var _hideJob as Number = 0;
 
     function initialize() {
         AppBase.initialize();
@@ -43,17 +42,14 @@ class PaiApp extends Application.AppBase {
         if (Trace.bornAt > 0) {
             _hiddenAt = System.getTimer();
             Trace.add("inactive", {"in_call" => Trace.active});
-            var timer = _hideTimer;
-            if (timer == null) {
-                timer = new Timer.Timer();
-                _hideTimer = timer;
-            }
-            timer.start(method(:onLongHide), Home.KEEP_MS, false);
+            Later.cancel(_hideJob);
+            _hideJob = Later.at(Home.KEEP_MS, method(:onLongHide));
         }
     }
 
     (:typecheck(disableGlanceCheck))
     function onLongHide() as Void {
+        _hideJob = 0;
         if (_hiddenAt != null) {
             Trace.add("hide_timeout", {"in_call" => Trace.active});
             Home.reset();
@@ -69,10 +65,8 @@ class PaiApp extends Application.AppBase {
             return;
         }
         _hiddenAt = null;
-        var timer = _hideTimer;
-        if (timer != null) {
-            timer.stop();
-        }
+        Later.cancel(_hideJob);
+        _hideJob = 0;
         var away = System.getTimer() - at;
         var keep = Home.keepOnReturn(away);
         Trace.add("active", {"hidden_ms" => away, "in_call" => Trace.active, "kept" => keep});

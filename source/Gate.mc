@@ -11,27 +11,25 @@ module Gate {
 
     var open as Boolean = true;
     var waiting as Array<Call> = [];
-    var idle as Timer.Timer? = null;
+    // the idle wait's job in Later, 0 when none waits
+    var idle as Number = 0;
 
     // The menu shows after the app opened or came back: the check runs once the idle time passed.
     function arm() as Void {
         disarm();
-        var timer = new Timer.Timer();
-        idle = timer;
-        timer.start(new GateCheck().method(:onIdle), IDLE_MS, false);
+        idle = Later.at(IDLE_MS, new GateCheck().method(:onIdle));
     }
 
     // A sub-app was chosen within the idle time: no check this time.
     function disarm() as Void {
-        var timer = idle;
-        if (timer != null) {
-            timer.stop();
-            idle = null;
+        if (idle != 0) {
+            Later.cancel(idle);
+            idle = 0;
         }
     }
 
     function check() as Void {
-        idle = null;
+        idle = 0;
         open = false;
         new Call(new GateCheck().method(:onChecked)).sendNow(Api.alarms());
     }

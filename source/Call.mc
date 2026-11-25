@@ -9,7 +9,8 @@ class Call {
     const TIMEOUT_MS = 25000;
 
     private var _callback as Method(outcome as Outcome) as Void;
-    private var _timer as Timer.Timer = new Timer.Timer();
+    // the watchdog's job in Later, 0 when none waits
+    private var _watchdog as Number = 0;
     private var _open as Boolean = true;
     private var _request as Request? = null;
     // counted in Idle.busy while out
@@ -47,7 +48,7 @@ class Call {
         } else {
             Idle.busy += 1;
             _counted = true;
-            _timer.start(method(:onTimeout), TIMEOUT_MS, false);
+            _watchdog = Later.at(TIMEOUT_MS, method(:onTimeout));
             try {
                 Wire.send(request, method(:onResponse));
             } catch (ex) {
@@ -63,7 +64,10 @@ class Call {
         }
         _open = false;
         Gate.waiting.remove(self);
-        _timer.stop();
+        if (_watchdog != 0) {
+            Later.cancel(_watchdog);
+            _watchdog = 0;
+        }
     }
 
     function onResponse(responseCode as Number, data as Dictionary or String or Null) as Void {
