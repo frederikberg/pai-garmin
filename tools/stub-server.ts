@@ -42,11 +42,15 @@
 // (a press there sends the turn and the session's answer, a piece without a sentence, follows in the
 // wake phase); a back command, or GET /__stub/call-session?off=1, gives it back to Computer.
 //
-// The self-report (POST /api/watch/self-report?id=<uuid>&feel=<heavy|okay|good>&at=<time>, the body
-// Ogg Opus) answers 202 {id} and keeps the upload in memory, once per id (a repeat answers 202 again
-// and is not counted twice). GET /__stub/self-reports lists what arrived; GET
-// /__stub/self-report-fail?count=<N>[&code=<status>] answers the next N uploads with that status
-// (default 503) without keeping them.
+// The self-report (POST /api/watch/self-report?id=<uuid>&part=<n>[&end=1]&feel=<heavy|okay|good>&at=<time>,
+// the body the next bytes of the Ogg Opus recording) takes the parts as docs/api.md describes: the
+// next part answers 200 {next_part}, a repeat 200 with the count it has, a gap 409, the end (body
+// empty or not) 202 {id}, and anything for a complete id 202 again. A part over 32 KiB or past the
+// cap (SELF_REPORT_CAP bytes, default 8 MiB; GET /__stub/self-report-cap?bytes=<n>) answers 413.
+// Without part the upload is a whole recording, kept as complete. GET /__stub/self-reports lists
+// what arrived (parts, bytes, complete, and streams: the Ogg Opus streams in it, more than one after
+// a microphone restart); GET /__stub/self-report-fail?count=<N>[&code=<status>] answers the next N
+// uploads with that status (default 503) without keeping them.
 const port = Number(process.env.PORT ?? 8099)
 const key = process.env.WATCH_KEY ?? 'stub-key'
 let scenario = process.env.SCENARIO ?? 'alarms'
@@ -207,9 +211,26 @@ let idleS = Number(process.env.IDLE_S ?? 180)
 let logDropped = 0
 let fail: { mode: string; count: number; path: string; ms: number } = { mode: '', count: 0, path: '', ms: 0 }
 let logLines = 0
-type SelfReport = { id: string; feel: string | null; at: string | null; bytes: number; ogg: boolean; tries: number }
+type SelfReport = { id: string; feel: string | null; at: string | null; bytes: number; ogg: boolean; tries: number; parts: number; complete: boolean; streams: number }
 const selfReports = new Map<string, SelfReport>()
+const selfReportAudio = new Map<string, Uint8Array[]>()
 let selfReportFail = { count: 0, code: 503 }
+let selfReportCap = Number(process.env.SELF_REPORT_CAP ?? 8 * 1024 * 1024)
+
+// The Ogg streams in a recording: pages whose header marks the beginning of a stream.
+function oggStreams(chunks: Uint8Array[]) {
+  const all = new Uint8Array(chunks.reduce((n, c) => n + c.length, 0))
+  let at = 0
+  for (const c of chunks) {
+    all.set(c, at)
+    at += c.length
+  }
+  let streams = 0
+  for (let i = 0; i + 5 < all.length; i++) {
+    if (all[i] === 0x4f && all[i + 1] === 0x67 && all[i + 2] === 0x67 && all[i + 3] === 0x53 && (all[i + 5] & 0x02) !== 0) streams++
+  }
+  return streams
+}
 
 function emit(call: Call, event: Record<string, unknown>) {
   const last = call.events.length ? call.events[call.events.length - 1].i : 0
@@ -504,7 +525,14 @@ Bun.serve({
       })
       return json({ session: !off })
     }
-    if (path === '/__stub/self-reports') return json({ reports: [...selfReports.values()] })
+    if (path === '/__stub/self-reports') {
+      selfReports.forEach((r) => (r.streams = oggStreams(selfReportAudio.get(r.id) ?? [])))
+      return json({ reports: [...selfReports.values()] })
+    }
+    if (path === '/__stub/self-report-cap') {
+      selfReportCap = Number(url.searchParams.get('bytes') ?? 8 * 1024 * 1024)
+      return json({ cap: selfReportCap })
+    }
     if (path === '/__stub/self-report-fail') {
       selfReportFail = { count: Number(url.searchParams.get('count') ?? 1), code: Number(url.searchParams.get('code') ?? 503) }
       return json(selfReportFail)
@@ -540,17 +568,39 @@ Bun.serve({
       const at = url.searchParams.get('at')
       const body = new Uint8Array(await req.arrayBuffer())
       const ogg = body.length >= 4 && body[0] === 0x4f && body[1] === 0x67 && body[2] === 0x67 && body[3] === 0x53
-      console.log(`  self-report ${id} feel ${feel ?? 'none'} at ${at} ${body.length} B ${req.headers.get('content-type')} ogg ${ogg} try ${url.searchParams.get('try') ?? 0}`)
+      const partParam = url.searchParams.get('part')
+      const end = url.searchParams.get('end') === '1'
+      console.log(`  self-report ${id} part ${partParam ?? 'whole'}${end ? ' end' : ''} feel ${feel ?? 'none'} at ${at} ${body.length} B ${req.headers.get('content-type')} ogg ${ogg} try ${url.searchParams.get('try') ?? 0}`)
       if (selfReportFail.count > 0) {
         selfReportFail.count--
         return json({ detail: 'injected' }, selfReportFail.code)
       }
-      if (!/^[0-9a-f-]{36}$/.test(id) || (feel !== null && !['heavy', 'okay', 'good'].includes(feel)) || body.length === 0) {
+      if (!/^[0-9a-f-]{36}$/.test(id) || (feel !== null && !['heavy', 'okay', 'good'].includes(feel))) {
         return json({ detail: 'invalid' }, 422)
       }
       const known = selfReports.get(id)
       if (known) known.tries++
-      else selfReports.set(id, { id, feel, at, bytes: body.length, ogg, tries: 1 })
+      if (known?.complete) return json({ id }, 202)
+      if (partParam === null) {
+        if (body.length === 0) return json({ detail: 'invalid' }, 422)
+        selfReports.set(id, { id, feel, at, bytes: body.length, ogg, tries: 1, parts: 1, complete: true, streams: 0 })
+        selfReportAudio.set(id, [body])
+        return json({ id }, 202)
+      }
+      const n = Number(partParam)
+      const report = known ?? { id, feel, at, bytes: 0, ogg, tries: 1, parts: 0, complete: false, streams: 0 }
+      if (n < report.parts) return json({ next_part: report.parts })
+      if (n > report.parts) return json({ next_part: report.parts }, 409)
+      if (body.length > 32768 || report.bytes + body.length > selfReportCap) return json({ detail: 'too_large' }, 413)
+      if (!known) selfReports.set(id, report)
+      const chunks = selfReportAudio.get(id) ?? []
+      if (body.length > 0) chunks.push(body)
+      selfReportAudio.set(id, chunks)
+      report.parts++
+      report.bytes += body.length
+      if (!end) return json({ next_part: report.parts })
+      if (report.bytes === 0) return json({ detail: 'bad_audio' }, 422)
+      report.complete = true
       return json({ id }, 202)
     }
     if (path.startsWith('/api/watch/voice/call')) return callRoute(req, url, path)

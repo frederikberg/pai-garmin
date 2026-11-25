@@ -277,7 +277,9 @@ module Outbox {
         inFlight = null;
         var report = find(id);
         var data = outcome.data;
-        var nextPart = data != null ? data["next_part"] as Object? : null;
+        // the simulator hands a JSON number over as a Float
+        var field = data != null ? data["next_part"] as Object? : null;
+        var nextPart = field instanceof Number || field instanceof Long || field instanceof Float || field instanceof Double ? field.toNumber() : null;
         if (report == null) {
             // forgotten while the request was out: nothing to change
         } else if (outcome.isOk() && nextPart instanceof Number) {

@@ -132,7 +132,7 @@ class SelfReportFlow {
     // The storage is full before anything was recorded: the microphone does not start.
     function noRoom() as Void {
         filled = true;
-        broken("Watch storage full of recordings waiting for the phone. They go once it is back");
+        broken("Recordings wait for the phone. They go once it is back");
     }
 
     function capturing() as Boolean {
@@ -197,7 +197,7 @@ class SelfReportFlow {
     // The storage took no more: the recording ends, and the screen says why until the server has it.
     function storageFull() as Boolean {
         filled = true;
-        notice = "Watch storage full, recording stopped. It is kept and goes once the phone is back";
+        notice = "Recording stopped. It goes once the phone is back";
         return full();
     }
 
