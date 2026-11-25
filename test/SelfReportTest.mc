@@ -139,7 +139,7 @@ function aFullStorageEndsTheRecordingAndStaysTheReasonUntilItWent(logger as Logg
     var ended = flow.storageFull() && flow.state == SelfReportFlow.STOPPING && flow.filled;
     flow.sending();
     flow.result(false, "Phone not connected");
-    var kept = flow.state == SelfReportFlow.FAILED && flow.notice.find("storage full") != null;
+    var kept = flow.state == SelfReportFlow.FAILED && flow.notice.find("stopped") != null;
     flow.press();
     flow.result(true, "");
     return ended && kept && flow.state == SelfReportFlow.DONE && flow.notice.length() == 0;

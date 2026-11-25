@@ -33,7 +33,7 @@ module OutboxKit {
 
     function answer(next as Number?) as Outcome {
         var o = new Outcome(Outcome.OK);
-        o.data = next == null ? {"id" => "r"} : {"next_part" => next};
+        o.data = next == null ? {"id" => "r"} : {"next_part" => next.toFloat()};
         return o;
     }
 
