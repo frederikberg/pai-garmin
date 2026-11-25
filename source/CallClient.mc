@@ -426,7 +426,9 @@ class CallClient {
         if (recording && _turnBytes > 0 && _call != null) {
             Trace.add("end_after_turn", {"bytes" => _turnBytes});
             _hangAfterTurnAt = _env.now();
-            press();
+            if (!press()) {
+                hangUp();
+            }
             return;
         }
         hangUp();

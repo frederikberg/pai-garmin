@@ -48,8 +48,8 @@ class PaiApp extends Application.AppBase {
         }
     }
 
-    // The screens stay as they are while hidden (the watch takes no change of them then): the
-    // sub-app on screen only ends what it runs, and the menu shows when the app is back.
+    // The screens stay as they are while hidden (a pop from a timer then ended in the watch's crash
+    // screen): the sub-app on screen only ends what it runs, and the menu shows when the app is back.
     (:typecheck(false))
     function onLongHide() as Void {
         _hideJob = 0;
@@ -79,6 +79,7 @@ class PaiApp extends Application.AppBase {
         Trace.add("active", {"hidden_ms" => away, "in_call" => Trace.active, "kept" => keep});
         if (keep) {
             Home.closePending();
+            WatchUi.requestUpdate();
         } else {
             Home.reset();
             Gate.arm();

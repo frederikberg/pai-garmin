@@ -18,11 +18,13 @@ module Home {
     var resetsLeft as Number = 0;
     // a reset is closing screens: a second one waits for it rather than popping the same screen again
     var resetting as Boolean = false;
-    // the app is hidden (onInactive until onActive): the watch takes no change of its screens then
+    // the app is hidden (onInactive until onActive): the screens are left as they are then (a pop
+    // from a timer while hidden ended in the watch's crash screen)
     var covered as Boolean = false;
     // the sub-app screen told when a hide lasts KEEP_MS (it has hiddenTooLong), null when none is up
     var target as Object? = null;
-    // a screen that wanted to close while the app was hidden; it closes when the app is back
+    // a screen that wanted to close while it was not on top (hidden, under a notification or its own
+    // menu); it closes once it is shown again
     var pendingPop as Object? = null;
 
     function create() as [WatchUi.Menu2, WatchUi.Menu2InputDelegate] {
@@ -51,20 +53,28 @@ module Home {
         }
     }
 
-    // A screen closes itself: now, or once the app is back if it is hidden.
-    function close(view as Object) as Void {
-        if (covered) {
+    // A screen closes itself: now when it is on screen, else once it is shown again (shown says
+    // whether the watch has it on screen: a notification or a menu on top hides it).
+    function close(view as Object, shown as Boolean) as Void {
+        if (covered || !shown || WatchUi.getCurrentView()[0] != view) {
             pendingPop = view;
         } else {
             WatchUi.popView(WatchUi.SLIDE_RIGHT);
         }
     }
 
-    // Back after a short hide: a screen that wanted to close meanwhile does so now, if still on top.
+    // A screen is on screen again: if it wanted to close meanwhile, it closes now, just after this
+    // event. Nothing while hidden or while a reset closes the screens itself.
+    function showing(view as Object) as Void {
+        if (pendingPop == view && !covered && !resetting) {
+            Later.at(0, new HomeClose().method(:run));
+        }
+    }
+
     function closePending() as Void {
         var view = pendingPop;
         pendingPop = null;
-        if (view != null && WatchUi.getCurrentView()[0] == view) {
+        if (view != null && !covered && !resetting && WatchUi.getCurrentView()[0] == view) {
             WatchUi.popView(WatchUi.SLIDE_RIGHT);
         }
     }
@@ -79,6 +89,15 @@ module Home {
             resetting = true;
             new HomeReset().step();
         }
+    }
+}
+
+class HomeClose {
+    function initialize() {
+    }
+
+    function run() as Void {
+        Home.closePending();
     }
 }
 

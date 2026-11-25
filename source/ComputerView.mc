@@ -28,6 +28,8 @@ class ComputerView extends WatchUi.View {
     private var _left as Boolean = false;
     // the key of the face on screen
     private var _shown as String = "";
+    // the watch has the screen on screen (onShow until onHide)
+    private var _onScreen as Boolean = false;
 
     function initialize() {
         View.initialize();
@@ -54,18 +56,14 @@ class ComputerView extends WatchUi.View {
         return new CallClient(io, new CallEnv());
     }
 
-    // On screen again: after a notification, a short hide or the menu above it the call goes on;
-    // when the call had ended meanwhile, a new one starts.
+    // On screen again: after a notification, a short hide or the menu above it the call goes on; a
+    // call that ended meanwhile closes the screen now.
     function onShow() as Void {
-        Home.target = self;
-        if (_client.closed() && !_left) {
-            _volume = _speaker.volume();
-            _left = false;
-            _client = build();
-            _recorder = new Recorder(_client);
-            _client.start();
-            _speaker = new Speaker(_client, _volume);
+        _onScreen = true;
+        if (!_left) {
+            Home.target = self;
         }
+        Home.showing(self);
         Home.redraw();
     }
 
@@ -73,6 +71,7 @@ class ComputerView extends WatchUi.View {
     // alike, and the call goes on through all of them. Only the screen closing (Back, the end of
     // the call, a reset after a long hide) ends it.
     function onHide() as Void {
+        _onScreen = false;
         if (_left || Home.resetting) {
             _left = true;
             if (Home.target == self) {
@@ -136,7 +135,7 @@ class ComputerView extends WatchUi.View {
     function leave() as Void {
         if (!_left) {
             _left = true;
-            Home.close(self);
+            Home.close(self, _onScreen);
         }
     }
 

@@ -66,7 +66,9 @@ class GateCheck {
         Trace.add("alarm_stopped", {"ok" => outcome.isOk()});
         if (outcome.isOk()) {
             Trace.add("buzz", {"cue" => "alarm"});
-            Buzz.once();
+            if (!Home.covered) {
+                Buzz.once();
+            }
         }
         Gate.release();
     }
