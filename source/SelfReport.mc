@@ -9,13 +9,18 @@ module SelfReport {
     // The faces, as the server names them.
     const FEELS = ["heavy", "okay", "good"];
 
-    // Where a recording stops by itself: what a watch holds in memory and sends in one request.
-    const MAX_BYTES = 65536;
+    // Where a recording stops by itself: the most audio the server takes for one recording
+    // (docs/api.md, Self-report), less a part's room for the windows that come while it stops.
+    const MAX_BYTES = 8388608 - 32768;
 
-    // The route with its query: id, feel (left out for a skipped face), at, and try for a repeat.
-    // The timestamp's plus sign is escaped; a bare one reads as a space.
-    function path(id as String, feel as String?, at as String, tries as Number) as String {
-        var query = "?id=" + id;
+    // The route with its query: id, the part's number, end on the last one, feel (left out for a
+    // skipped face), at, and try for a repeat. The timestamp's plus sign is escaped; a bare one
+    // reads as a space.
+    function path(id as String, part as Number, end as Boolean, feel as String?, at as String, tries as Number) as String {
+        var query = "?id=" + id + "&part=" + part;
+        if (end) {
+            query += "&end=1";
+        }
         if (feel != null) {
             query += "&feel=" + feel;
         }
@@ -63,7 +68,8 @@ module SelfReport {
 }
 
 // Where a self-report stands, from the microphone starting to the server having it. The screen
-// acts on what the calls here answer.
+// acts on what the calls here answer. The audio not yet handed to the Outbox is the tail: a full
+// part of it goes to the Outbox while the recording runs, the rest when it ends.
 class SelfReportFlow {
     enum {
         // the microphone is starting
@@ -85,7 +91,9 @@ class SelfReportFlow {
         DATA_KEPT,
         // the first data of the recording: the microphone is live
         DATA_FIRST,
-        // the audio reached the limit: the recording ends here
+        // the tail holds a full part
+        DATA_PART,
+        // the recording reached SelfReport.MAX_BYTES: it ends here
         DATA_FULL
     }
 
@@ -97,9 +105,13 @@ class SelfReportFlow {
 
     var state as Number = WAIT;
     var audio as ByteArray = new [0]b;
+    // everything recorded, handed over or not
+    var bytes as Number = 0;
     // attempts after the first
     var tries as Number = 0;
     var notice as String = "";
+    // the watch's storage took no more: the recording stopped there
+    var filled as Boolean = false;
     private var _captureOpen as Boolean = false;
 
     // code as Recorder.start answers: 0 recording began, 1 the watch cannot capture Opus, 2 starting failed.
@@ -117,24 +129,46 @@ class SelfReportFlow {
         _captureOpen = false;
     }
 
+    // The storage is full before anything was recorded: the microphone does not start.
+    function noRoom() as Void {
+        filled = true;
+        broken("Watch storage full of recordings waiting for the phone. They go once it is back");
+    }
+
     function capturing() as Boolean {
         return state == WAIT || state == SPEAK;
     }
 
+    function captureOpen() as Boolean {
+        return _captureOpen;
+    }
+
     // A window of the recording. What comes while Start stops the microphone is the end of it and kept.
-    function data(bytes as ByteArray) as Number {
+    function data(chunk as ByteArray) as Number {
         if (!_captureOpen) {
             return DATA_KEPT;
         }
-        if (audio.size() + bytes.size() > SelfReport.MAX_BYTES) {
-            return DATA_FULL;
-        }
-        audio.addAll(bytes);
+        audio.addAll(chunk);
+        bytes += chunk.size();
         if (state == WAIT) {
             state = SPEAK;
             return DATA_FIRST;
         }
-        return DATA_KEPT;
+        if (state != SPEAK) {
+            return DATA_KEPT;
+        }
+        if (bytes >= SelfReport.MAX_BYTES) {
+            return DATA_FULL;
+        }
+        return audio.size() >= Outbox.PART_BYTES ? DATA_PART : DATA_KEPT;
+    }
+
+    // The first part of the tail, which leaves it.
+    function takePart() as ByteArray {
+        var n = Outbox.PART_BYTES < audio.size() ? Outbox.PART_BYTES : audio.size();
+        var part = audio.slice(0, n);
+        audio = audio.slice(n, null);
+        return part;
     }
 
     // Start: ends a recording the microphone has delivered, or sends again after a failure.
@@ -151,7 +185,7 @@ class SelfReportFlow {
         return PRESS_NONE;
     }
 
-    // The audio limit was reached while recording.
+    // The recording reached its limit, or the server's.
     function full() as Boolean {
         if (state == SPEAK) {
             state = STOPPING;
@@ -160,8 +194,29 @@ class SelfReportFlow {
         return false;
     }
 
+    // The storage took no more: the recording ends, and the screen says why until the server has it.
+    function storageFull() as Boolean {
+        filled = true;
+        notice = "Watch storage full, recording stopped. It is kept and goes once the phone is back";
+        return full();
+    }
+
     function captureEnded() as Void {
         _captureOpen = false;
+    }
+
+    // The microphone started again after the watch stopped it (code as Recorder.start answers): its
+    // new stream follows in the same recording. A start that failed ends the recording.
+    function resumed(code as Number) as Boolean {
+        if (code == 0) {
+            _captureOpen = true;
+            return true;
+        }
+        _captureOpen = false;
+        if (!full()) {
+            broken("Microphone busy");
+        }
+        return false;
     }
 
     // The microphone is done, or has been given up on: the request may go.
@@ -175,11 +230,13 @@ class SelfReportFlow {
     }
 
     // An answer about the recording: the one the screen waits for, or one of the Outbox's own tries
-    // while the screen shows the failure.
+    // while the screen shows the failure. A full storage stays the reason shown until it went.
     function result(ok as Boolean, text as String) as Void {
         if (state == SENDING || state == FAILED) {
             state = ok ? DONE : FAILED;
-            notice = ok ? "" : text;
+            if (ok || !filled) {
+                notice = ok ? "" : text;
+            }
         }
     }
 }

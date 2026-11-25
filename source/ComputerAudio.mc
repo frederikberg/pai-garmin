@@ -60,6 +60,11 @@ class Recorder {
         return 0;
     }
 
+    // The microphone runs: the watch may have stopped it without a word while the app was hidden.
+    function running() as Boolean {
+        return Capture.getState() == Capture.CAPTURE_CAPTURING;
+    }
+
     function stop() as Void {
         if (Capture.getState() == Capture.CAPTURE_CAPTURING) {
             Capture.stop();

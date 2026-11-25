@@ -5,14 +5,14 @@ import Toybox.Time;
 
 (:test)
 function theSelfReportPathCarriesIdFaceAndTime(logger as Logger) as Boolean {
-    var path = SelfReport.path("0f8fad5b-d9cb-469f-a165-70867728950e", "good", "2026-11-24T08:30:00+00:00", 0);
-    return path.equals("/api/watch/self-report?id=0f8fad5b-d9cb-469f-a165-70867728950e&feel=good&at=2026-11-24T08:30:00%2B00:00");
+    var path = SelfReport.path("0f8fad5b-d9cb-469f-a165-70867728950e", 0, false, "good", "2026-11-24T08:30:00+00:00", 0);
+    return path.equals("/api/watch/self-report?id=0f8fad5b-d9cb-469f-a165-70867728950e&part=0&feel=good&at=2026-11-24T08:30:00%2B00:00");
 }
 
 (:test)
-function aSkippedFaceLeavesFeelOutAndARepeatNamesItsAttempt(logger as Logger) as Boolean {
-    var path = SelfReport.path("x", null, "t", 2);
-    return path.equals("/api/watch/self-report?id=x&at=t&try=2");
+function aSkippedFaceLeavesFeelOutAndARepeatOfTheLastPartNamesItsAttempt(logger as Logger) as Boolean {
+    var path = SelfReport.path("x", 3, true, null, "t", 2);
+    return path.equals("/api/watch/self-report?id=x&part=3&end=1&at=t&try=2");
 }
 
 (:test)
@@ -27,10 +27,11 @@ function aUuidIsVersionFourAndDiffersPerCall(logger as Logger) as Boolean {
 (:test)
 function theSelfReportRequestCarriesTheAudioAsItsBody(logger as Logger) as Boolean {
     var audio = [1, 2, 3]b;
-    var request = Api.selfReport("id", "okay", Time.now(), audio, 0);
+    var request = Api.selfReport("id", 0, false, "okay", Time.now(), audio, 0);
     var body = request.body;
+    var empty = Api.selfReport("id", 4, true, "okay", Time.now(), null, 0);
     return request.method == Communications.HTTP_REQUEST_METHOD_POST && request.params == null && body != null && body.size() == 3
-        && request.path.find("feel=okay") != null;
+        && request.path.find("feel=okay") != null && empty.body == null && empty.params == null && empty.path.find("part=4&end=1") != null;
 }
 
 (:test)
@@ -82,12 +83,66 @@ function theEndOfTheMicrophoneIsNotWaitedForForever(logger as Logger) as Boolean
 }
 
 (:test)
-function aRecordingStopsAtTheLimitWithoutKeepingTheOverflow(logger as Logger) as Boolean {
+function aRecordingStopsAtTheServersCapKeepingTheLastWindow(logger as Logger) as Boolean {
     var flow = new SelfReportFlow();
     flow.micStarted(0);
-    flow.data(new [SelfReport.MAX_BYTES - 1]b);
-    var full = flow.data([1, 2]b) == SelfReportFlow.DATA_FULL;
-    return full && flow.full() && flow.state == SelfReportFlow.STOPPING && flow.audio.size() == SelfReport.MAX_BYTES - 1;
+    flow.data([1]b);
+    flow.bytes = SelfReport.MAX_BYTES - 2;
+    var before = flow.data([2]b) == SelfReportFlow.DATA_KEPT;
+    var full = flow.data([3]b) == SelfReportFlow.DATA_FULL;
+    return before && full && flow.full() && flow.state == SelfReportFlow.STOPPING && flow.audio.size() == 3;
+}
+
+(:test)
+function aFullPartOfTheTailIsHandedOverAndTheRestStays(logger as Logger) as Boolean {
+    var flow = new SelfReportFlow();
+    flow.micStarted(0);
+    flow.data([0]b);
+    var below = flow.data(new [Outbox.PART_BYTES - 2]b) == SelfReportFlow.DATA_KEPT;
+    var part = flow.data([7, 8, 9]b) == SelfReportFlow.DATA_PART;
+    var taken = flow.takePart();
+    return below && part && taken.size() == Outbox.PART_BYTES && flow.audio.size() == 2 && flow.audio[1] == 9
+        && flow.bytes == Outbox.PART_BYTES + 2;
+}
+
+(:test)
+function theStreamAfterAMicrophoneRestartJoinsTheSameRecording(logger as Logger) as Boolean {
+    var flow = new SelfReportFlow();
+    flow.micStarted(0);
+    flow.data([1]b);
+    // the watch stopped the microphone: what comes before the restart is not kept
+    flow.captureEnded();
+    var closed = flow.data([1]b) == SelfReportFlow.DATA_KEPT && flow.bytes == 1;
+    var again = flow.resumed(0);
+    flow.data([2]b);
+    return closed && again && flow.state == SelfReportFlow.SPEAK && flow.bytes == 2 && flow.audio.size() == 2;
+}
+
+(:test)
+function aMicrophoneThatDoesNotStartAgainEndsTheRecordingOrBreaksAnEmptyOne(logger as Logger) as Boolean {
+    var speaking = new SelfReportFlow();
+    speaking.micStarted(0);
+    speaking.data([1]b);
+    speaking.captureEnded();
+    var ends = !speaking.resumed(2) && speaking.state == SelfReportFlow.STOPPING && speaking.readyToSend(false);
+    var waiting = new SelfReportFlow();
+    waiting.micStarted(0);
+    waiting.captureEnded();
+    return ends && !waiting.resumed(2) && waiting.state == SelfReportFlow.BROKEN;
+}
+
+(:test)
+function aFullStorageEndsTheRecordingAndStaysTheReasonUntilItWent(logger as Logger) as Boolean {
+    var flow = new SelfReportFlow();
+    flow.micStarted(0);
+    flow.data([1]b);
+    var ended = flow.storageFull() && flow.state == SelfReportFlow.STOPPING && flow.filled;
+    flow.sending();
+    flow.result(false, "Phone not connected");
+    var kept = flow.state == SelfReportFlow.FAILED && flow.notice.find("storage full") != null;
+    flow.press();
+    flow.result(true, "");
+    return ended && kept && flow.state == SelfReportFlow.DONE && flow.notice.length() == 0;
 }
 
 (:test)
@@ -100,16 +155,12 @@ function aMicrophoneThatCannotStartBreaksTheFlowWithItsReason(logger as Logger) 
 }
 
 (:test)
-function aRecordingSplitForStorageJoinsBackWhole(logger as Logger) as Boolean {
+function aRecordingSplitForStorageKeepsEveryByteInOrder(logger as Logger) as Boolean {
     var bytes = new [0]b;
     for (var i = 0; i < 32769; i++) {
         bytes.add(i % 251);
     }
     var parts = Outbox.split(bytes, 16384);
-    var back = Outbox.join(parts);
-    var same = back.size() == bytes.size();
-    for (var i = 0; same && i < bytes.size(); i += 997) {
-        same = back[i] == bytes[i];
-    }
-    return parts.size() == 3 && parts[2].size() == 1 && same && back[32768] == bytes[32768];
+    return parts.size() == 3 && parts[0].size() == 16384 && parts[2].size() == 1 && parts[1][0] == bytes[16384]
+        && parts[2][0] == bytes[32768] && Outbox.split(new [0]b, 16384).size() == 0;
 }

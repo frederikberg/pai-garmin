@@ -59,11 +59,13 @@ module Api {
         return new Request(Communications.HTTP_REQUEST_METHOD_POST, ALARM + "/dismiss", null, false);
     }
 
-    // A spoken self-report: the recorded audio, the client's id (a retry carries the same one),
-    // the face (null for a skipped one) and when recording began. tries is the attempt number, 0
-    // for the first; the simulator answers an identical repeat of a failed request from memory.
-    function selfReport(id as String, feel as String?, at as Time.Moment, audio as ByteArray, tries as Number) as Request {
-        var request = new Request(Communications.HTTP_REQUEST_METHOD_POST, SelfReport.path(id, feel, AlarmTime.toIso(at), tries), null, true);
+    // A part of a spoken self-report: the next bytes of the recording (null for an empty last part,
+    // which goes with no body), the client's id (a retry carries the same one), the part's number,
+    // whether it is the last, the face (null for a skipped one) and when recording began. tries is
+    // the attempt number, 0 for the first; the simulator answers an identical repeat of a failed
+    // request from memory.
+    function selfReport(id as String, part as Number, end as Boolean, feel as String?, at as Time.Moment, audio as ByteArray?, tries as Number) as Request {
+        var request = new Request(Communications.HTTP_REQUEST_METHOD_POST, SelfReport.path(id, part, end, feel, AlarmTime.toIso(at), tries), null, true);
         request.body = audio;
         return request;
     }
