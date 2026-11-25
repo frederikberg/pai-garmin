@@ -64,7 +64,7 @@ class PaiApp extends Application.AppBase {
 
     // Back on screen: the screen it had after a short hide, the menu again, as after a fresh start,
     // after a long one.
-    (:typecheck(disableGlanceCheck))
+    (:typecheck(false))
     function onActive(state as Dictionary?) as Void {
         var at = _hiddenAt;
         if (at == null) {
@@ -79,6 +79,10 @@ class PaiApp extends Application.AppBase {
         Trace.add("active", {"hidden_ms" => away, "in_call" => Trace.active, "kept" => keep});
         if (keep) {
             Home.closePending();
+            var target = Home.target;
+            if (target != null && target has :shownAgain) {
+                target.shownAgain();
+            }
             WatchUi.requestUpdate();
         } else {
             Home.reset();

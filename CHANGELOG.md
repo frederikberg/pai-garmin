@@ -6,6 +6,8 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ### Changed
 
+- After a short hide in the middle of a turn the microphone starts again, so speaking goes on in the same turn (needs a server that reads a second Ogg Opus stream in a turn).
+- After a long hide the menu is a fresh one, so its first entry is selected on the watch too.
 - A notification no longer ends a Computer call or a self-report recording. After a hide of less than ten seconds (the music controls, the watch face) every screen is as it was, the same call included. After ten seconds hidden a call sends the turn being spoken and hangs up, a recording is ended and sent, and the app comes back on its menu with its first entry selected. The screens are closed only once the app is back on screen, which also ends the crash after a long hide.
 - A self-report recording is kept on the watch until the server has it and sent again by itself (every few seconds without a phone, after half a minute and then longer after a server error, after Back and at the next start), never during a call; Back no longer drops a recording that ended. A recording whose screen closes after a long hide is kept and sent too.
 - A Computer call without a phone connection waits for it for up to a minute, keeps recording and taps once when the call is up.
