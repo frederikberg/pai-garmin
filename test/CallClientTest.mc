@@ -13,6 +13,7 @@ class FakeEnv extends CallEnv {
     var clock as Number = 0;
     var requests as Array<Dictionary> = [];
     var audioBytes as Number = 0;
+    var phone as Boolean = true;
 
     function initialize() {
         CallEnv.initialize();
@@ -23,7 +24,7 @@ class FakeEnv extends CallEnv {
     }
 
     function check() as Number {
-        return 0;
+        return phone ? 0 : 2;
     }
 
     function baseUrl() as String {
@@ -1093,4 +1094,46 @@ function theLastPiecesPlayedReportGoesBeforeAQuickReplysPress(logger as Logger) 
     c.press();
     c.captureEnded();
     return first && env.onlyOpen().find("&end=") != null;
+}
+
+(:test)
+function aCallWithoutItsPhoneWaitsForItAndKeepsTheTurn(logger as Logger) as Boolean {
+    var env = new FakeEnv();
+    var io = new FakeIo();
+    Trace.lines = [];
+    env.phone = false;
+    var c = new CallClient(io.io(), env);
+    io.client = c;
+    c.start();
+    c.chunk(Kit.silence(2100));
+    for (var t = 0; t <= 40; t++) {
+        env.clock = t * 1000;
+        c.tick();
+    }
+    var waited = c.stalled == null && c.recording && !env.asked("voice/call");
+    env.phone = true;
+    env.clock = 41000;
+    c.tick();
+    env.reply("voice/call", 201, {"call" => "c1"});
+    var tapped = io.cues.indexOf(CallLogic.CUE_TAKEN) >= 0;
+    // the turn recorded while waiting goes out once the call is up
+    env.settle();
+    return waited && tapped && env.audioBytes == 2100;
+}
+
+(:test)
+function aPhoneThatStaysAwayEndsTheWaitAfterAMinute(logger as Logger) as Boolean {
+    var env = new FakeEnv();
+    var io = new FakeIo();
+    Trace.lines = [];
+    env.phone = false;
+    var c = new CallClient(io.io(), env);
+    io.client = c;
+    c.start();
+    c.chunk(Kit.silence(500));
+    for (var t = 0; t <= 70; t++) {
+        env.clock = t * 1000;
+        c.tick();
+    }
+    return c.stalled != null;
 }

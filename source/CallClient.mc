@@ -143,6 +143,9 @@ class CallClient {
     const HANG_GRACE_MS = 2000;
     // the open is tried this often before the call is given up
     const OPEN_TRIES = 5;
+    // while the phone link is missing the open waits this long for it, asking every PHONE_POLL_MS
+    const PHONE_WAIT_MS = 60000;
+    const PHONE_POLL_MS = 1000;
     // the open waits for the first microphone data, but not longer than this
     const OPEN_WAIT_MS = 2500;
     // audio goes out once this much is waiting, or when the turn is over: about a second of Opus a request
@@ -234,6 +237,8 @@ class CallClient {
     private var _micMs as Number = -1;
     private var _openSentAt as Number = 0;
     private var _openMs as Number = -1;
+    // when the open first found no phone link, -1 while it has one
+    private var _noPhoneSince as Number = -1;
     private var _pieceN as Number = 0;
     private var _gapMax as Number = 0;
     private var _starvedN as Number = 0;
@@ -351,6 +356,7 @@ class CallClient {
             _lossTimes = [];
             _lanes[OPEN].notBefore = 0;
             _lanes[OPEN].failures = 0;
+            _noPhoneSince = -1;
         }
         if (action != CallLogic.PRESS_SEND) {
             // the send's buzz waits for the microphone to stop, so it is never in the recording
@@ -1125,7 +1131,9 @@ class CallClient {
 
     private function sendOpen() as Void {
         _openSentAt = _env.now();
-        Trace.add("open", null);
+        if (_noPhoneSince < 0) {
+            Trace.add("open", null);
+        }
         jsonPost(OPEN, "", {} as Dictionary<Object, Object>);
     }
 
@@ -1364,6 +1372,13 @@ class CallClient {
                 _call = id;
                 _openMs = _env.now() - _openSentAt;
                 Trace.add("opened", {"call" => id, "ms" => _openMs});
+                if (_noPhoneSince >= 0) {
+                    // the phone link came back: one tap says the call is up
+                    Trace.add("phone_back", {"waited_ms" => _env.now() - _noPhoneSince});
+                    _noPhoneSince = -1;
+                    notice = null;
+                    _io.cue.invoke(CallLogic.CUE_TAKEN);
+                }
             } else {
                 failed(OPEN, 0);
                 return false;
@@ -1461,6 +1476,9 @@ class CallClient {
     // A failed request waits, then goes again.
     private function failed(lane as Number, code as Number) as Void {
         var l = _lanes[lane];
+        if (lane == OPEN && _call == null && !_closing && code == Communications.BLE_CONNECTION_UNAVAILABLE && waitForPhone()) {
+            return;
+        }
         l.failures += 1;
         l.notBefore = _env.now() + CallLogic.backoff(l.failures);
         if (lane == OPEN && _call == null && !_closing && l.failures >= OPEN_TRIES) {
@@ -1485,6 +1503,24 @@ class CallClient {
                 nextPiece();
             }
         }
+    }
+
+    // The open found no phone link: it asks again soon, without counting a failure, until the link
+    // is back or PHONE_WAIT_MS have passed. The turn keeps recording meanwhile. False once the wait
+    // is over, which gives the call up.
+    private function waitForPhone() as Boolean {
+        var now = _env.now();
+        if (_noPhoneSince < 0) {
+            _noPhoneSince = now;
+            Trace.add("no_phone", {});
+        }
+        if (now - _noPhoneSince >= PHONE_WAIT_MS) {
+            return false;
+        }
+        _lanes[OPEN].notBefore = now + PHONE_POLL_MS;
+        setNotice("No phone, waiting");
+        changed();
+        return true;
     }
 
     // What a failed request's code says, for the screen.

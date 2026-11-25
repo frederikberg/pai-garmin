@@ -98,3 +98,18 @@ function aMicrophoneThatCannotStartBreaksTheFlowWithItsReason(logger as Logger) 
     b.micStarted(2);
     return a.state == SelfReportFlow.BROKEN && a.notice.find("Opus") != null && b.state == SelfReportFlow.BROKEN && b.notice.find("busy") != null;
 }
+
+(:test)
+function aRecordingSplitForStorageJoinsBackWhole(logger as Logger) as Boolean {
+    var bytes = new [0]b;
+    for (var i = 0; i < 32769; i++) {
+        bytes.add(i % 251);
+    }
+    var parts = Outbox.split(bytes, 16384);
+    var back = Outbox.join(parts);
+    var same = back.size() == bytes.size();
+    for (var i = 0; same && i < bytes.size(); i += 997) {
+        same = back[i] == bytes[i];
+    }
+    return parts.size() == 3 && parts[2].size() == 1 && same && back[32768] == bytes[32768];
+}

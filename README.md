@@ -22,7 +22,8 @@ Open it and a small menu shows, with Computer as its first entry: one Start and,
 ## Why
 
 - **Opening it stops the alarm.** Open the app and leave it on the menu for a second, or look at its glance, and a ringing alarm is stopped with one short buzz, so the phone stops pushing too. A quick press into a sub-app never waits for that check.
-- **Always the same presses.** The app always comes back on its menu, also after the watch face, another app or the glance list's timeout, so the same buttons always lead to the same screen.
+- **Always the same presses.** Back within ten seconds of a hide (a notification, a look at the watch face) and the screen is as you left it; later the app comes back on its menu with the first entry selected, so the same buttons always lead to the same screen. A call left behind hangs up after those ten seconds.
+- **A self-report is never lost.** It stays on the watch until the server has it, and goes by itself once the phone connection is back.
 - **Built for buttons.** Every step works with the physical buttons alone; the time entry is hours, then minutes (then seconds for a time from now), then save.
 - **Your server, not a cloud account.** The app talks only to the PAI Cloud server you enter in its settings.
 

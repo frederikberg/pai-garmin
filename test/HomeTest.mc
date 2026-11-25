@@ -2,11 +2,11 @@ import Toybox.Lang;
 import Toybox.Test;
 
 (:test)
-function aShortHideKeepsACall(logger as Logger) as Boolean {
-    return Home.keepOnReturn(true, 3000) && !Home.keepOnReturn(true, Home.KEEP_CALL_MS);
+function aHideShorterThanTenSecondsKeepsTheScreen(logger as Logger) as Boolean {
+    return Home.keepOnReturn(3000) && Home.keepOnReturn(9999);
 }
 
 (:test)
-function anyHideOutsideACallReturnsToTheMenu(logger as Logger) as Boolean {
-    return !Home.keepOnReturn(false, 0) && !Home.keepOnReturn(false, 60000);
+function aHideOfTenSecondsOrMoreReturnsToTheMenu(logger as Logger) as Boolean {
+    return !Home.keepOnReturn(10000) && !Home.keepOnReturn(60000);
 }

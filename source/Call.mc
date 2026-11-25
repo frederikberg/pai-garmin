@@ -12,6 +12,8 @@ class Call {
     private var _timer as Timer.Timer = new Timer.Timer();
     private var _open as Boolean = true;
     private var _request as Request? = null;
+    // counted in Idle.busy while out
+    private var _counted as Boolean = false;
 
     function initialize(callback as Method(outcome as Outcome) as Void) {
         _callback = callback;
@@ -43,6 +45,8 @@ class Call {
         } else if (!System.getDeviceSettings().phoneConnected) {
             finish(Outcome.failed("no_phone"));
         } else {
+            Idle.busy += 1;
+            _counted = true;
             _timer.start(method(:onTimeout), TIMEOUT_MS, false);
             try {
                 Wire.send(request, method(:onResponse));
@@ -53,6 +57,10 @@ class Call {
     }
 
     function cancel() as Void {
+        if (_counted) {
+            _counted = false;
+            Idle.busy -= 1;
+        }
         _open = false;
         Gate.waiting.remove(self);
         _timer.stop();
@@ -71,6 +79,7 @@ class Call {
         if (_open) {
             cancel();
             _callback.invoke(outcome);
+            Idle.poke(Idle.DELAY_MS);
         }
     }
 }

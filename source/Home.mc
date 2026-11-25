@@ -3,12 +3,13 @@ import Toybox.Timer;
 import Toybox.WatchUi;
 
 // The menu of sub-apps, the first screen however the app is opened, the one a hang-up returns to,
-// and the one the app comes back to after it was hidden. Computer comes first and is the focused
+// and the one the app comes back to after it was hidden for KEEP_MS or longer. Computer comes first and is the focused
 // entry, where the watch has audio, so one Start begins a call. It needs no request: nothing goes to
 // the server until a sub-app is chosen.
 module Home {
-    // A call stays up through a hide shorter than this (a notification, the music controls).
-    const KEEP_CALL_MS = 10000;
+    // Any screen, a call included, stays through a hide shorter than this (a notification, the music
+    // controls, a quick look at the watch face); a longer hide closes it.
+    const KEEP_MS = 10000;
     // Ticks a reset may take: more screens than the app ever stacks above the menu, with room for
     // slow pops.
     const MAX_DEPTH = 20;
@@ -30,10 +31,9 @@ module Home {
         return [menu, new HomeDelegate()];
     }
 
-    // Whether the app, back after a hide of hiddenMs, keeps the screen it had: only a call does, and
-    // only through a short hide. Everything else returns to the menu.
-    function keepOnReturn(inCall as Boolean, hiddenMs as Number) as Boolean {
-        return inCall && hiddenMs < KEEP_CALL_MS;
+    // Whether the app, back after a hide of hiddenMs, keeps the screen it had.
+    function keepOnReturn(hiddenMs as Number) as Boolean {
+        return hiddenMs < KEEP_MS;
     }
 
     // Every screen above the menu is closed, one per tick, since the view stack changes only after
