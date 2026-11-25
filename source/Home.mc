@@ -37,7 +37,8 @@ module Home {
     }
 
     // Every screen above the menu is closed, one per tick, since the view stack changes only after
-    // the current event; a call's screen hangs up as it closes.
+    // the current event; a call's screen hangs up as it closes. The menu keeps the entry chosen last
+    // selected, so it is moved back to the first.
     function reset() as Void {
         resetsLeft = MAX_DEPTH;
         new HomeReset().step();
@@ -54,6 +55,10 @@ class HomeReset {
     function step() as Void {
         var current = WatchUi.getCurrentView()[0];
         if (current == null || current == Home.menu || Home.resetsLeft <= 0) {
+            var menu = Home.menu;
+            if (menu != null) {
+                menu.setFocus(0);
+            }
             WatchUi.requestUpdate();
             return;
         }
@@ -73,13 +78,15 @@ class HomeDelegate extends WatchUi.Menu2InputDelegate {
 
     function onSelect(item as WatchUi.MenuItem) as Void {
         Gate.disarm();
-        if (item.getId() == :computer) {
+        var id = item.getId();
+        Trace.add("open", {"app" => id == :computer ? "computer" : id == :weather ? "weather" : id == :selfreport ? "selfreport" : "alarm"});
+        if (id == :computer) {
             var computer = new ComputerView();
             WatchUi.pushView(computer, new ComputerDelegate(computer), WatchUi.SLIDE_LEFT);
-        } else if (item.getId() == :weather) {
+        } else if (id == :weather) {
             var view = new WeatherView();
             WatchUi.pushView(view, new WeatherDelegate(view), WatchUi.SLIDE_LEFT);
-        } else if (item.getId() == :selfreport) {
+        } else if (id == :selfreport) {
             var screen = SelfReportMenu.create();
             WatchUi.pushView(screen[0], screen[1], WatchUi.SLIDE_LEFT);
         } else {

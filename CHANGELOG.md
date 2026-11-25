@@ -6,7 +6,7 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ### Changed
 
-- The app comes back on its menu after it was hidden (the watch face, another app, recent apps, the glance list). A Computer call survives a hide of less than ten seconds; a longer one hangs it up.
+- The app comes back on its menu after it was hidden (the watch face, another app, recent apps, the glance list), with its first entry selected. A Computer call survives a hide of less than ten seconds; a longer one hangs it up.
 - Opening the app sends nothing until a sub-app is chosen. The check for a ringing alarm runs only after the menu has stayed on screen for a second; a ringing alarm is stopped with one short buzz and no screen. The glance stops a ringing alarm it sees the same way.
 
 ### Added
