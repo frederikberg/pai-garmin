@@ -81,7 +81,7 @@ module Home {
 
     // Every screen above the menu is closed, one per tick, since the view stack changes only after
     // the current event; a call's screen hangs up as it closes. The menu keeps the entry chosen last
-    // selected, so it is moved back to the first.
+    // selected, so it is replaced by a fresh one.
     function reset() as Void {
         resetsLeft = MAX_DEPTH;
         pendingPop = null;
@@ -110,9 +110,11 @@ class HomeReset {
     function step() as Void {
         var current = WatchUi.getCurrentView()[0];
         if (current == null || current == Home.menu || Home.resetsLeft <= 0) {
-            var menu = Home.menu;
-            if (menu != null) {
-                menu.setFocus(0);
+            if (current != null && current == Home.menu) {
+                // a fresh menu has its first entry selected; the watch puts the old one back on the
+                // entry chosen last, whatever setFocus asked for
+                var fresh = Home.create();
+                WatchUi.switchToView(fresh[0], fresh[1], WatchUi.SLIDE_IMMEDIATE);
             }
             Home.resetting = false;
             WatchUi.requestUpdate();
