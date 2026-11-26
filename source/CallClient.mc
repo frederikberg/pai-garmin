@@ -48,6 +48,11 @@ class CallEnv {
     function request(url as String, params as Object?, options as Dictionary, callback as Method) as Void {
         Communications.makeWebRequest(url, params, options, callback);
     }
+
+    // Drops the app's requests in flight; their answers never come.
+    function cancelRequests() as Void {
+        Communications.cancelAllRequests();
+    }
 }
 
 // The audio side of a call, as the client sees it: methods the screen supplies.
@@ -120,6 +125,10 @@ class CallClient {
     // fetched but not yet played audio: the piece playing and the next ones
     const UNPLAYED_MAX = 60000;
     const PIECE_TRIES = 6;
+    // a piece whose answer did not come in time this often is given up
+    const PIECE_TIMEOUTS = 2;
+    // with no answer from the server for this long while requests fail, the call stops and says so
+    const LINK_LOST_MS = 40000;
     // failed turns in a row before recording stops and the cause is shown
     const MAX_FAILS = 5;
     // a request slower than this is logged with its round trip; of the rest, every 20th
@@ -180,7 +189,7 @@ class CallClient {
     private var _env as CallEnv;
     private var _lanes as Array<Lane> = [
         new Lane("open", 20000), new Lane("events", 15000), new Lane("command", 20000), new Lane("audio", 20000),
-        new Lane("piece", 30000), new Lane("log", 20000), new Lane("hang", 10000)
+        new Lane("piece", 12000), new Lane("log", 20000), new Lane("hang", 10000)
     ];
     private var _inflight as Number = 0;
     private var _closing as Boolean = false;
@@ -210,6 +219,11 @@ class CallClient {
     private var _lastPiece as Number = -1;
     private var _pieces as Array<Dictionary<String, Number>> = [];
     private var _pieceTries as Number = 0;
+    // the piece whose answers did not come in time, and how often
+    private var _timeoutN as Number = -1;
+    private var _pieceTimeouts as Number = 0;
+    // when requests began to fail without any answer since, -1 while answers come
+    private var _failingSince as Number = -1;
     private var _unplayed as Number = 0;
     private var _sizes as Dictionary<Number, Number> = {};
     private var _playedQueue as Array<Number> = [];
@@ -363,6 +377,7 @@ class CallClient {
             _lanes[OPEN].notBefore = 0;
             _lanes[OPEN].failures = 0;
             _noPhoneSince = -1;
+            _failingSince = -1;
         }
         if (action != CallLogic.PRESS_SEND) {
             // the send's buzz waits for the microphone to stop, so it is never in the recording
@@ -448,11 +463,9 @@ class CallClient {
         for (var i = 0; i < _lanes.size(); i++) {
             // an open still on its way is answered later: its call is hung up then
             if (i != OPEN) {
-                _lanes[i].token += 1;
-                _lanes[i].busy = false;
+                abandon(i);
             }
         }
-        recalcInflight();
         _hangId = _call;
         _call = null;
         _lanes[HANG].failures = 0;
@@ -780,9 +793,7 @@ class CallClient {
         _endPress = 0;
         _bodyEnd = 0;
         _afterPress = _press;
-        _lanes[AUDIO].token += 1;
-        _lanes[AUDIO].busy = false;
-        recalcInflight();
+        abandon(AUDIO);
         heard = "";
         spoken = "";
         _bufferFullLogged = false;
@@ -851,9 +862,7 @@ class CallClient {
         _sentBodies = [];
         _sentBytes = 0;
         _endPending = false;
-        _lanes[AUDIO].token += 1;
-        _lanes[AUDIO].busy = false;
-        recalcInflight();
+        abandon(AUDIO);
     }
 
     // The turn is over for the watch once its audio is acknowledged: the press follows.
@@ -924,10 +933,10 @@ class CallClient {
     private function dropPieces() as Void {
         forgetUnplayed();
         _pieces = [];
-        _lanes[PIECE].token += 1;
-        _lanes[PIECE].busy = false;
+        abandon(PIECE);
         _pieceTries = 0;
-        recalcInflight();
+        _timeoutN = -1;
+        _pieceTimeouts = 0;
     }
 
     // ----- the clock
@@ -945,9 +954,7 @@ class CallClient {
         for (var i = 0; i < _lanes.size(); i++) {
             var lane = _lanes[i];
             if (lane.busy && now - lane.sentAt > lane.watchdogMs) {
-                lane.token += 1;
-                lane.busy = false;
-                recalcInflight();
+                abandon(i);
                 failed(i, Communications.NETWORK_REQUEST_TIMED_OUT);
             }
         }
@@ -968,6 +975,11 @@ class CallClient {
             Trace.add("capture_no_complete", null);
             _captureOpen = false;
             cueSent();
+        }
+        if (_failingSince >= 0 && now - _failingSince >= LINK_LOST_MS && _call != null && stalled == null && fatal == null) {
+            // nothing gets through any more: the call says so instead of repeating requests unseen
+            Trace.add("link_lost", {"ms" => now - _failingSince});
+            stopForGood("Phone link lost", true);
         }
         if (_fatalNotSet && _env.check() != 1) {
             fatal = null;
@@ -1021,6 +1033,20 @@ class CallClient {
             }
         }
         _inflight = n;
+    }
+
+    // Gives up the lane's request. One still in flight is cancelled too: an answer that never comes
+    // would keep holding one of the few requests the platform lets the app have open, and once those
+    // are all held every new request fails on the watch without reaching the phone. One request at
+    // a time (MAX_PARALLEL) makes it the only one cancelled.
+    private function abandon(lane as Number) as Void {
+        var l = _lanes[lane];
+        l.token += 1;
+        if (l.busy) {
+            l.busy = false;
+            _env.cancelRequests();
+        }
+        recalcInflight();
     }
 
     private function ready(lane as Number) as Boolean {
@@ -1232,6 +1258,11 @@ class CallClient {
     }
 
     private function sendPiece(call as String) as Void {
+        if (_pieces[0]["n"] == _timeoutN && _pieceTimeouts >= PIECE_TIMEOUTS) {
+            // asked for ahead and never brought: the announced piece is not asked again
+            nextPiece();
+            return;
+        }
         fetchPiece(call, _pieces[0]["n"] as Number, _pieces[0]["ms"] as Number, false);
     }
 
@@ -1302,6 +1333,10 @@ class CallClient {
             Trace.add("rtt", {"lane" => l.name, "ms" => rtt, "bytes" => bytes, "code" => code});
         }
         var ok = code >= 200 && code < 300;
+        if (code >= 0 || code == Communications.INVALID_HTTP_BODY_IN_NETWORK_RESPONSE) {
+            // the phone brought an answer: the link works, whatever the server said
+            _failingSince = -1;
+        }
         if (lane == EVENTS || lane == PIECE) {
             // the report that rode on this request is delivered when the request was
             var slot = lane == EVENTS ? 0 : 1;
@@ -1533,6 +1568,9 @@ class CallClient {
             stopForGood("Cannot connect (" + codeText(code) + ")", true);
             return;
         }
+        if (code < 0 && _failingSince < 0) {
+            _failingSince = _env.now();
+        }
         // the first retries say what went wrong; a long outage then adds a line only now and then
         if (lane != LOG) {
             _logUrgent = true;
@@ -1542,6 +1580,19 @@ class CallClient {
         }
         if (lane == PIECE) {
             _pieceTries += 1;
+            if (code == Communications.NETWORK_REQUEST_TIMED_OUT) {
+                if (_fetchN != _timeoutN) {
+                    _timeoutN = _fetchN;
+                    _pieceTimeouts = 0;
+                }
+                _pieceTimeouts += 1;
+                if (_pieceTimeouts >= PIECE_TIMEOUTS) {
+                    // the link does not bring this piece: the answer goes on without it
+                    Trace.add("piece_timeouts", {"n" => _fetchN, "n_timeouts" => _pieceTimeouts});
+                    setNotice("Answer lost on the link");
+                    _pieceTries = PIECE_TRIES;
+                }
+            }
             if (_pieceTries >= PIECE_TRIES && _fetchSpec) {
                 // asking ahead is given up; the events name the piece
                 _expectPiece = false;

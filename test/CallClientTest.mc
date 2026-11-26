@@ -88,6 +88,27 @@ class FakeEnv extends CallEnv {
         return count == 1 ? url : "";
     }
 
+    // The platform drops every request in flight; their answers never come.
+    var cancels as Number = 0;
+
+    function cancelRequests() as Void {
+        cancels += 1;
+        for (var i = 0; i < requests.size(); i++) {
+            requests[i][:open] = false;
+        }
+    }
+
+    // How many requests went out whose address contains part.
+    function count(part as String) as Number {
+        var n = 0;
+        for (var i = 0; i < requests.size(); i++) {
+            if ((requests[i][:url] as String).find(part) != null) {
+                n += 1;
+            }
+        }
+        return n;
+    }
+
     // How many requests are in flight.
     function inFlight() as Number {
         var count = 0;
@@ -1201,4 +1222,48 @@ function aGapAnswersNextSeqAsTheSimulatorHandsItOverAFloat(logger as Logger) as 
     env.replyOnly(409, {"next_seq" => 1.0});
     c.chunk(Kit.silence(2500));
     return first && env.onlyOpen().find("seq=1") != null;
+}
+
+(:test)
+function aPieceThatNeverArrivesIsCancelledAndTheAnswerGoesOn(logger as Logger) as Boolean {
+    var env = new FakeEnv();
+    var io = new FakeIo();
+    var c = Kit.opened(env, io);
+    Kit.turnSent(env, c);
+    env.reply("/events", 200, {"cursor" => 2, "events" => [{"i" => 1, "state" => "speaking"}, {"i" => 2, "piece" => 0, "ms" => 2000}]});
+    // the phone never brings the piece; everything else is answered
+    var crowded = false;
+    for (var t = 250; t <= 40000; t += 250) {
+        env.clock = t;
+        c.tick();
+        crowded = crowded || env.inFlight() > 1;
+        if (env.onlyOpen().find("/events") != null) {
+            env.reply("/events", 200, {"cursor" => 2, "events" => []});
+        } else if (env.onlyOpen().find("/piece/") == null) {
+            env.replyOnly(200, {});
+        }
+    }
+    var asked = env.count("/piece/0");
+    logger.debug("piece asks " + asked + ", cancels " + env.cancels + ", notice " + c.notice);
+    // each request given up on was cancelled, the piece was given up after two, and the call goes on
+    return asked == 2 && env.cancels == 2 && !crowded && !c.moreToPlay() && c.stalled == null;
+}
+
+(:test)
+function aLinkThatAnswersNothingStopsTheCallAndSaysSo(logger as Logger) as Boolean {
+    var env = new FakeEnv();
+    var io = new FakeIo();
+    var c = Kit.opened(env, io);
+    c.chunk(Kit.silence(300));
+    var quietUntil = -1;
+    for (var t = 250; t <= 70000; t += 250) {
+        env.clock = t;
+        c.tick();
+        if (c.stalled == null) {
+            quietUntil = t;
+        }
+    }
+    logger.debug("stalled " + c.stalled + " after " + quietUntil);
+    // no request is ever answered: after the first failure plus the grace the call stops visibly
+    return c.stalled != null && (c.stalled as String).equals("Phone link lost") && quietUntil >= 40000 && !c.recording;
 }
