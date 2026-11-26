@@ -19,6 +19,10 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 - The watch's log lines go to the server also when no call follows.
 - Opening the app sends nothing until a sub-app is chosen. The check for a ringing alarm runs only after the menu has stayed on screen for a second; a ringing alarm is stopped with one short buzz and no screen. The glance stops a ringing alarm it sees the same way.
 
+### Fixed
+
+- A Computer call no longer gets stuck on *Sending* with a growing retry count when the phone stops bringing the answer's audio. A request that times out is cancelled instead of being left open, where it could keep holding one of the few requests a watch app may have in flight until none reached the phone any more; an audio piece times out after 12 seconds instead of 30 and is skipped after its second timeout (*Answer lost on the link*); and a call that has heard nothing back for 40 seconds while its requests fail stops with *Phone link lost* until Start tries again.
+
 ### Added
 
 - A new alarm can be set as a time from now: Back from the hours of the time entry reaches the choice *At time* / *In*, and *In* picks hours, minutes and seconds starting at 0:00:00, shows when the alarm will ring and saves now plus the duration (zero is refused). An alarm whose time has seconds is listed with them.
