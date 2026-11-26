@@ -4,6 +4,8 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+## [0.8.4] - 2026-11-26
+
 ### Changed
 
 - A self-report has no length limit of its own: it goes to the server in 16 KiB parts while it is spoken (`docs/api.md`, Self-report; needs a server that takes parts) and ends by itself only shortly before the server's cap of 8 MiB, about 40 minutes. Without the phone the parts wait in the watch's storage until it is full, with room kept for the rest of the app; the recording then stops with *Storage full* on screen, and what was kept goes once the phone is back, also after a restart. Recordings kept by the earlier version go as parts.
@@ -18,10 +20,6 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 - A Computer call without a phone connection waits for it for up to a minute, keeps recording and taps once when the call is up.
 - The watch's log lines go to the server also when no call follows.
 - Opening the app sends nothing until a sub-app is chosen. The check for a ringing alarm runs only after the menu has stayed on screen for a second; a ringing alarm is stopped with one short buzz and no screen. The glance stops a ringing alarm it sees the same way.
-
-### Fixed
-
-- A Computer call no longer gets stuck on *Sending* with a growing retry count when the phone stops bringing the answer's audio. A request that times out is cancelled instead of being left open, where it could keep holding one of the few requests a watch app may have in flight until none reached the phone any more; an audio piece times out after 12 seconds instead of 30 and is skipped after its second timeout (*Answer lost on the link*); and a call that has heard nothing back for 40 seconds while its requests fail stops with *Phone link lost* until Start tries again.
 
 ### Added
 
@@ -42,4 +40,5 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ### Fixed
 
+- A Computer call no longer gets stuck on *Sending* with a growing retry count when the phone stops bringing the answer's audio. A request that times out is cancelled instead of being left open, where it could keep holding one of the few requests a watch app may have in flight until none reached the phone any more; an audio piece times out after 12 seconds instead of 30 and is skipped after its second timeout (*Answer lost on the link*); and a call that has heard nothing back for 40 seconds while its requests fail stops with *Phone link lost* until Start tries again.
 - Weather: an answer in which the server knows nothing (every source down) no longer replaces a good answer younger than 30 minutes, which stays with *not updated · HH:MM*; an hour without a UV value is a gap on the UV page, not a bar for none.
