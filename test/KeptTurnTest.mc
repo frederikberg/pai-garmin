@@ -443,7 +443,7 @@ function aTurnTheCallEndedOnIsOfferedAtTheNextStartAndStartSendsItOnce(logger as
     c2.start();
     var face = CallScreen.face(c2);
     var offered = c2.asking && !c2.recording && io2.captures == 0 && face.headline.equals("Kept turn")
-        && face.body.find("said ") != null && face.body.find(" · 0:1") != null && KeptKit.cued(io2.cues, CallLogic.CUE_KEPT) == 1;
+        && face.body.find("said ") != null && face.body.find("for 0:1") != null && face.foot.equals("Start: send") && KeptKit.cued(io2.cues, CallLogic.CUE_KEPT) == 1;
     logger.debug("offer: " + face.body + " | " + face.hint);
     // the call opens and the server says where the turn stands, and nothing of it goes meanwhile
     KeptKit.wait(env, c2, 500);

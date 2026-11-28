@@ -160,7 +160,7 @@ module Kept {
         var line = {"parts" => written, "bytes" => bytes, "ms" => ms, "kept_bytes" => stored(), "ok" => ok};
         if (ms > SLOW_WRITE_MS || !ok) {
             Trace.add("turn_stored", line);
-        } else {
+        } else if (written > 0) {
             Trace.debug("turn_stored", line);
         }
         return ok;
@@ -274,10 +274,10 @@ module Kept {
         return Outbox.partKey(turn["id"] as String, n);
     }
 
-    // When he said it and for how long, as "said 13:10 · 1:04".
+    // When he said it and for how long, on two lines: "said 13:10", "for 1:04".
     function label(turn as Dictionary<String, Object?>) as String {
         var at = Gregorian.info(new Time.Moment(num(turn, "at")), Time.FORMAT_SHORT);
         var s = num(turn, "ms") / 1000;
-        return "said " + at.hour.format("%02d") + ":" + at.min.format("%02d") + " · " + (s / 60) + ":" + (s % 60).format("%02d");
+        return "said " + at.hour.format("%02d") + ":" + at.min.format("%02d") + "\nfor " + (s / 60) + ":" + (s % 60).format("%02d");
     }
 }

@@ -4,6 +4,14 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+### Changed
+
+- A turn spoken to Computer is kept on the watch until the server has taken it (`docs/api.md`, Kept turns; needs a server that stores turns by id). Its audio goes out in numbered parts that stay in memory, and in the watch's storage once the server is behind, until each is confirmed. A failing link, a server that is being replaced, a call the server forgot or ended, no phone: none of them stops the microphone or deletes the turn; a new call continues it where the server's copy ends, and the last line of the screen says how much the watch is keeping.
+- The two short buzzes for a send come when the server has the turn, not when the microphone stops. A press nothing answers gets one long buzz and an orange *Kept* instead, and the turn goes by itself once the link is back.
+- A turn a call left on the watch (a press that never got through, or ten seconds or more of speech when the call or the app ended) is offered when Computer opens next, with when it was said and for how long: Start sends it, Back drops it. The menu says *1 kept turn* meanwhile. A turn that reaches the server more than two minutes after its press asks the same question before anything runs.
+- Computer's one sentence about what it did stays under *Speak* until the next press.
+- The rule that ended a turn after about 18 seconds without a link (*Link too slow*) is gone, as are the stops *Phone link lost* and *Cannot connect* while a turn is open.
+
 ## [0.8.4] - 2026-11-26
 
 ### Changed
