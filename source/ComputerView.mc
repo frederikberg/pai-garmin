@@ -5,7 +5,8 @@ import Toybox.Lang;
 import Toybox.System;
 import Toybox.WatchUi;
 
-// The Computer screen: opening it starts a call. The watch records each turn by itself, Start sends
+// The Computer screen: opening it starts a call. A turn an earlier call left on the watch is offered
+// first (Start sends it, Back drops it). The watch records each turn by itself, Start sends
 // it, or cuts the answer and records again; Up and Down are the volume, Back hangs up and returns to
 // the menu, as does the end of the call by the server. The screen shows what the call is doing as one
 // word in a ring of the state's colour (CallScreen), and is drawn again only when that picture changes.
@@ -98,6 +99,11 @@ class ComputerView extends WatchUi.View {
         _client.hangUp();
     }
 
+    // The app ends: a turn being spoken stays on the watch.
+    function appStopped() as Void {
+        _client.appStopped();
+    }
+
     // A short buzz tells the press was taken; the server answers it a moment later.
     function press() as Void {
         _client.press();
@@ -126,8 +132,13 @@ class ComputerView extends WatchUi.View {
     }
 
     // Back: the bye buzz, the hang-up goes to the server, then the screen leaves for the menu; a second
-    // Back leaves at once. In a session's call it asks for Computer instead.
+    // Back leaves at once. In a session's call it asks for Computer instead, and on a kept turn that
+    // waits for his word it drops the turn.
     function back() as Boolean {
+        if (_client.asking && !_client.closed()) {
+            _client.answer(false);
+            return true;
+        }
         if (_client.inSession() && !_client.closed() && !_client.ending()) {
             // in a session's call Back returns to Computer; the call goes on
             _client.back();
