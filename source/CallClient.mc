@@ -124,6 +124,7 @@ class CallClient {
     const TICK_MS = 250;
     // a part the server has not confirmed stays in memory this long, then goes to storage
     const HOLD_MS = 3000;
+    const STORE_RETRY_MS = 10000;
     // with no answer to his press this long after the microphone stopped, the turn counts as kept
     const KEPT_AFTER_MS = 4000;
     // a turn left without a press is kept when he spoke at least this long, and dropped otherwise
@@ -214,6 +215,9 @@ class CallClient {
     private var _noticeUntil as Number = 0;
     // the sentence of Computer's answer that is playing
     var spoken as String = "";
+    // what Computer did in its last turn, as the server's one sentence; it stays under "Speak" until
+    // his next press
+    var done as String = "";
     // the server ended the call: what still plays finishes, then the watch hangs up
     private var _ending as Boolean = false;
     // why recording stopped for good until Start is pressed
@@ -262,6 +266,8 @@ class CallClient {
     private var _transcribing as Boolean = false;
     private var _pressTries as Number = 0;
     private var _pressNotBefore as Number = 0;
+    // no storage write before this, after one the storage refused
+    private var _storeAfter as Number = 0;
     // while hanging up, the drop of the turn he left was sent to the call once
     private var _dropTried as Boolean = false;
     // when the microphone stopped after his press
@@ -613,7 +619,7 @@ class CallClient {
         if (turn != null) {
             cutParts(true);
             var pressed = turn["pressed"] instanceof Number;
-            var ms = spokenMs();
+            var ms = recording ? spokenMs() : Kept.num(turn, "ms");
             var keep = pressed || asking || ms >= LEAVE_KEEP_MS;
             Trace.add("turn_left", {"id" => turn["id"] as String, "why" => why, "kept" => keep, "ms" => ms,
                 "pressed" => pressed, "unsent" => Kept.unsent(turn)});
@@ -703,7 +709,7 @@ class CallClient {
                 _caughtUpAt = _env.now();
             }
             Kept.add(turn, body);
-            if (_env.now() - _caughtUpAt >= HOLD_MS) {
+            if (_env.now() - _caughtUpAt >= HOLD_MS && _env.now() >= _storeAfter) {
                 store(turn);
             }
         }
@@ -717,6 +723,10 @@ class CallClient {
             Trace.add("turn_behind", {"id" => turn["id"] as String, "unsent" => Kept.unsent(turn), "call" => _call != null});
         }
         var ok = Kept.persist(turn);
+        if (!ok) {
+            // what the storage refused stays in memory and is tried again later, not on every tick
+            _storeAfter = _env.now() + STORE_RETRY_MS;
+        }
         if ((!ok || !Kept.hasRoom()) && recording) {
             Trace.add("turn_storage_full", {"kept_bytes" => Kept.stored(), "stored" => ok});
             setNotice("Storage full");
@@ -1079,6 +1089,7 @@ class CallClient {
             turn["pressed"] = Time.now().value();
         }
         recording = false;
+        done = "";
         _cuedSent = false;
         _stoppedAt = 0;
         _endPending = true;
@@ -1199,7 +1210,14 @@ class CallClient {
             _turnSentPoll = -1;
             pressTaken();
         } else if ("dropped".equals(state)) {
+            // dropped on the server: nothing of it stays here either
+            var asked = asking;
+            Kept.forget(turn);
+            _kept = null;
             leaveTurn("dropped");
+            if (asked) {
+                begin();
+            }
         } else if ("held".equals(state)) {
             // pressed too long ago to run unasked: he says whether it goes
             if (!asking) {
@@ -1388,7 +1406,7 @@ class CallClient {
         }
         keepIfUnanswered(now);
         var turn = _kept;
-        if (turn != null && Kept.held.size() > 0 && Kept.unsent(turn) > 0 && now - _caughtUpAt >= HOLD_MS) {
+        if (turn != null && Kept.held.size() > 0 && Kept.unsent(turn) > 0 && now - _caughtUpAt >= HOLD_MS && now >= _storeAfter) {
             // the server has been behind for a while: what waits in memory goes to storage
             store(turn);
         }
@@ -1871,11 +1889,6 @@ class CallClient {
             } else {
                 drop(lane);
             }
-        } else if (code == 422 && lane == AUDIO) {
-            // the call cannot use the part, but the server stored it: the turn goes on, and its press
-            // has the server read the stored audio as a whole
-            Trace.add("turn_part_unread", {"seq" => _kept != null ? Kept.num(_kept as Dictionary<String, Object?>, "sent") : -1});
-            partStored(null);
         } else if (code == 409 && (lane == AUDIO || (lane == CMD && isTurnCommand("press")))) {
             // the server is somewhere else in the turn, or the turn is finished: it is asked, since
             // the body of an error answer may not reach the watch
@@ -1940,11 +1953,9 @@ class CallClient {
         }
         Kept.confirm(turn, next);
         caughtUp(turn);
-        if (ended > 0 && data != null) {
+        if (ended > 0) {
             // the press rode on this request
             pressAnswered(data);
-        } else if (ended > 0) {
-            _endPress = 0;
         }
     }
 
@@ -2341,6 +2352,9 @@ class CallClient {
             }
         } else if (e["heard"] instanceof String) {
             heard = e["heard"] as String;
+        } else if (e["line"] instanceof String) {
+            done = e["line"] as String;
+            Trace.add("line", {"chars" => done.length()});
         } else if (e["turn"] instanceof Dictionary) {
             // where a kept turn stands, once the server has turned it into text
             var t = e["turn"] as Dictionary<String, Object>;
@@ -2433,6 +2447,7 @@ class CallClient {
         _turnSentPoll = -1;
         engine = "";
         heard = "";
+        done = "";
         playbackActive = false;
         for (var i = 0; i < _lanes.size(); i++) {
             if (i != LOG && i != HANG) {

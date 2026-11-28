@@ -48,7 +48,8 @@ module CallScreen {
             f.headline = "Kept turn";
             f.color = Graphics.COLOR_ORANGE;
             f.body = c.keptLabel();
-            f.hint = "Start: send  Back: drop";
+            f.foot = "Start: send";
+            f.hint = "Back: drop";
         } else if (c.leaving()) {
             // Back in a session's call: the call goes back to Computer
             f.headline = "To Computer";
@@ -60,6 +61,7 @@ module CallScreen {
         } else if (c.recording) {
             f.headline = "Speak";
             f.color = Graphics.COLOR_GREEN;
+            f.body = session ? "" : c.done;
             f.hint = "Start: send";
         } else if (c.kept) {
             // he pressed, and the turn is on the watch until the server has it
@@ -93,6 +95,9 @@ module CallScreen {
             f.body = notice;
         }
         var keeping = c.keepingS();
+        if (c.asking) {
+            return f;
+        }
         f.foot = keeping > 0 ? "no link · keeping " + (keeping / 60) + ":" + (keeping % 60).format("%02d") : c.linkTrouble();
         return f;
     }

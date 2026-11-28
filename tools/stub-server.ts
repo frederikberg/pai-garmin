@@ -36,7 +36,17 @@
 // has); GET /__stub/call-expire forgets every call, so the watch gets 404 and opens a new one;
 // GET /__stub/call-forget?n=<n> makes the server lose the last n chunks of the turn; mode=bad_audio answers audio with 422;
 // GET /__stub/call-notice?code=<code>&text=<text> sends a notice event to every call;
+// GET /__stub/call-line?text=<text> sends the line event (what Computer did, shown under Speak);
 // GET /__stub/call-think?ms=<ms> sets how long it thinks before speaking; GET /__stub/call-end?reason=<text> ends every call; GET /__stub/call-owner?on=1 answers the open with 403 owner_only.
+//
+// A turn sent with id=<id> is a kept turn (docs/api.md, Kept turns): its chunks are stored by id
+// across calls and across /__stub/call-expire, seq counts within the id, {"action": "turn"} says where
+// it stands, {"action": "drop"} drops it, and its press answers taken (heard live in this call from
+// its first chunk, no pause of more than 5 s between chunks), pressed (anything else: "taken" follows
+// as an event after 400 ms, then the answer) or held (pressed more than LATE_S seconds ago, default
+// 120, and not confirmed; GET /__stub/turn-late?s=<s>). GET /__stub/turn-unread?count=<N> makes the
+// next N stored presses end in an event with an error instead. GET /__stub/turns lists every turn:
+// state, chunks, bytes, how often it was handed on (taken) and the Ogg streams in it.
 //
 // GET /__stub/call-session?title=<title>&phase=<wake|recording> hands every call to a session's call
 // (a press there sends the turn and the session's answer, a piece without a sentence, follows in the
@@ -202,8 +212,15 @@ type Call = {
   owner: string
   session: string | null
   backs: Set<number>
+  // kept turns this call has heard from their first chunk on, and when their last chunk came
+  live: Map<string, number>
 }
 const calls = new Map<string, Call>()
+type Turn = { id: string; state: 'open' | 'pressed' | 'held' | 'taken' | 'dropped'; chunks: Uint8Array[]; pressedAt: number | null; taken: number }
+const turns = new Map<string, Turn>()
+let lateS = Number(process.env.LATE_S ?? 120)
+let unread = 0
+const LIVE_GAP_MS = 5000
 let ownerOnly = false
 // how long the stub "thinks" before it speaks; GET /__stub/call-think?ms=<ms>
 let thinkMs = 900
@@ -268,13 +285,55 @@ function applyPress(call: Call, press: number, turn: number) {
     emit(call, { clear: true, dropped: unplayed })
     call.pieces.forEach((_, n) => !call.played.has(n) && call.pieces.delete(n))
     setState(call, call.owner === 'session' ? 'wake' : 'listening')
-  } else if (call.owner === 'session') {
+  } else {
+    respond(call)
+  }
+}
+// The turn is his: a session takes it and answers in its wake phase, Computer answers.
+function respond(call: Call) {
+  if (call.owner === 'session') {
     emit(call, { heard: `Sent to ${call.session}.` })
     setState(call, 'wake')
     later(call, thinkMs, () => void addPiece(call, 0, false))
   } else {
     answer(call)
   }
+}
+// The press for a kept turn; the answer is the turn's state.
+function pressTurn(call: Call, turn: Turn, press: number, ago: number, confirm: boolean) {
+  console.log(`  press ${press} for kept turn ${turn.id} (${turn.state}) ago ${ago} confirm ${confirm}`)
+  if (turn.state === 'taken' || turn.state === 'dropped' || call.presses.has(press)) return turn.state
+  call.presses.add(press)
+  call.pressApplied = Math.max(call.pressApplied, press)
+  if (call.idle) clearTimeout(call.idle)
+  call.idle = null
+  turn.pressedAt ??= Date.now() - ago * 1000
+  if (!confirm && Date.now() - turn.pressedAt > lateS * 1000) {
+    turn.state = 'held'
+    return turn.state
+  }
+  call.bytes = turn.chunks.reduce((n, c) => n + c.length, 0)
+  call.chunks = turn.chunks.length
+  if (call.live.has(turn.id)) {
+    turn.state = 'taken'
+    turn.taken++
+    respond(call)
+    return turn.state
+  }
+  turn.state = 'pressed'
+  setTimeout(() => {
+    if (turn.state !== 'pressed' || !calls.has(call.id)) return
+    if (unread > 0) {
+      unread--
+      emit(call, { turn: { id: turn.id, state: 'pressed', error: 'transcription_failed' } })
+      return
+    }
+    turn.state = 'taken'
+    turn.taken++
+    emit(call, { turn: { id: turn.id, state: 'taken' } })
+    respond(call)
+  }, 400)
+  return turn.state
 }
 // Computer's pieces carry their sentence, a session's do not.
 async function addPiece(call: Call, k: number, sentence: boolean) {
@@ -305,7 +364,7 @@ function openCall(): Call {
   const call: Call = {
     id: crypto.randomUUID(), events: [], waiters: [], expected: new Map(), bytes: 0, chunks: 0, presses: new Set(), pressApplied: 0, ended: false,
     state: 'ready', pieces: new Map(), nextPiece: 0, played: new Set(), generation: 0, timers: [], idle: null,
-    owner: 'computer', session: null, backs: new Set(),
+    owner: 'computer', session: null, backs: new Set(), live: new Map(),
   }
   calls.set(call.id, call)
   setState(call, 'ready')
@@ -363,6 +422,25 @@ async function callRoute2(req: Request, url: URL, sub: string): Promise<Response
     // a new turn's audio waits (at most 3 s) until the press before it has been applied
     for (let waited = 0; call.pressApplied < afterPress && waited < 3000; waited += 100) await new Promise((r) => setTimeout(r, 100))
     const body = new Uint8Array(await req.arrayBuffer())
+    const id = url.searchParams.get('id')
+    if (id) {
+      const kept = turns.get(id) ?? { id, state: 'open' as const, chunks: [], pressedAt: null, taken: 0 }
+      turns.set(id, kept)
+      console.log(`  audio turn ${turn} seq ${seq} ${body.length} B id ${id} (${kept.state}, has ${kept.chunks.length})`)
+      if (kept.state === 'taken' || kept.state === 'dropped') return json({ turn: kept.state }, 409)
+      if (seq > kept.chunks.length) return json({ next_seq: kept.chunks.length }, 409)
+      if (seq === kept.chunks.length) {
+        const last = call.live.get(id)
+        if (seq === 0 || (last !== undefined && Date.now() - last <= LIVE_GAP_MS)) call.live.set(id, Date.now())
+        else call.live.delete(id)
+        kept.chunks.push(body)
+      }
+      const endPress = Number(url.searchParams.get('end') ?? 0)
+      if (endPress > 0) {
+        return json({ next_seq: kept.chunks.length, turn: pressTurn(call, kept, endPress, Number(url.searchParams.get('ago') ?? 0), false) })
+      }
+      return json({ next_seq: kept.chunks.length })
+    }
     const expected = call.expected.get(turn) ?? 0
     console.log(`  audio turn ${turn} seq ${seq} ${body.length} B ${req.headers.get('content-type')} after_press ${afterPress} (expected ${expected})`)
     if (seq > expected) return json({ next_seq: expected }, 409)
@@ -377,7 +455,24 @@ async function callRoute2(req: Request, url: URL, sub: string): Promise<Response
     return json({ next_seq: call.expected.get(turn) })
   }
   if (rest === '/command' && req.method === 'POST') {
-    const body = (await req.json().catch(() => ({}))) as { action?: string; press?: number; turn?: number; back?: number }
+    const body = (await req.json().catch(() => ({}))) as { action?: string; press?: number; turn?: number; back?: number; id?: string; chunks?: number; ago?: number; confirm?: boolean }
+    const kept = body.id ? turns.get(body.id) : undefined
+    if (body.action === 'turn' && body.id) {
+      console.log(`  turn ${body.id}: ${kept?.state ?? 'unknown'}, has ${kept?.chunks.length ?? 0}`)
+      return json({ turn: kept?.state ?? 'unknown', next_seq: kept?.chunks.length ?? 0 })
+    }
+    if (body.action === 'drop' && body.id) {
+      console.log(`  drop ${body.id} (${kept?.state ?? 'unknown'})`)
+      if (kept?.state === 'taken') return json({ turn: 'taken' })
+      turns.set(body.id, { id: body.id, state: 'dropped', chunks: [], pressedAt: null, taken: 0 })
+      return json({ turn: 'dropped' })
+    }
+    if (body.action === 'press' && body.id) {
+      if (!Number.isInteger(body.press)) return json({ detail: 'bad command' }, 422)
+      const have = kept?.chunks.length ?? 0
+      if (!kept || (body.chunks ?? 0) > have) return json({ next_seq: have }, 409)
+      return json({ turn: pressTurn(call, kept, body.press!, body.ago ?? 0, body.confirm === true) })
+    }
     if (body.action === 'back' && Number.isInteger(body.back)) {
       console.log(`  back ${body.back} with ${call.owner}`)
       if (!call.backs.has(body.back!) && call.owner === 'session') toComputer(call)
@@ -508,9 +603,28 @@ Bun.serve({
       calls.forEach((call) => emit(call, { notice }))
       return json({ notice })
     }
+    if (path === '/__stub/call-line') {
+      const line = url.searchParams.get('text') ?? 'Done, nine todos moved.'
+      calls.forEach((call) => emit(call, { line }))
+      return json({ line })
+    }
     if (path === '/__stub/call-idle') {
       idleS = Number(url.searchParams.get('s') ?? 180)
       return json({ idleS })
+    }
+    if (path === '/__stub/turn-late') {
+      lateS = Number(url.searchParams.get('s') ?? 120)
+      return json({ lateS })
+    }
+    if (path === '/__stub/turn-unread') {
+      unread = Number(url.searchParams.get('count') ?? 1)
+      return json({ unread })
+    }
+    if (path === '/__stub/turns') {
+      return json({ turns: [...turns.values()].map((t) => ({
+        id: t.id, state: t.state, chunks: t.chunks.length, bytes: t.chunks.reduce((n, c) => n + c.length, 0),
+        taken: t.taken, streams: oggStreams(t.chunks),
+      })) })
     }
     if (path === '/__stub/call-log') {
       return json({ lines: logLines, dropped: logDropped })
