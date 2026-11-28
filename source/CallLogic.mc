@@ -19,30 +19,24 @@ module CallLogic {
         return code < 0 || code >= 500 || code == 429 || code == 408;
     }
 
-    // What an audio chunk's 409 means: the server expects chunk `expected` next while the watch
-    // holds chunk `sent` unacknowledged, and still has the acknowledged chunks from `base` on.
-    // "acked": the server already has it (also when it is ahead); "rewind": it misses chunks the
-    // watch still holds; "lost": it misses chunks the watch no longer has.
-    function afterConflict(sent as Number, expected as Number, base as Number) as String {
-        if (expected > sent) {
-            return "acked";
-        }
-        return expected >= base ? "rewind" : "lost";
-    }
-
     // The watch's own signals, never from the network.
     const CUE_SENT = 0;
     const CUE_YOUR_TURN = 1;
     const CUE_ERROR = 2;
     const CUE_BYE = 3;
     const CUE_TAKEN = 4;
+    const CUE_KEPT = 5;
     // How the watch buzzes for a signal, as [strength 0-100, length in ms] with strength 0 a pause.
-    // "Speak" (the microphone delivers) is one short buzz, "sent" two short ones, "taken" (a press
-    // whose result comes later) one tap, much shorter than "speak", "bye" (the call is over) two short
-    // ones and a longer one, and an error one long buzz.
+    // "Speak" (the microphone delivers) is one short buzz, "sent" (the server has the turn) two short
+    // ones, "kept" (the watch has the turn, the server not yet, or a kept turn waits for his word)
+    // one long one, "taken" (a press whose result comes later) one tap, much shorter than "speak",
+    // "bye" (the call is over) two short ones and a longer one, and an error one longer still, with
+    // the error tone.
     function buzz(kind as Number) as Array<Array<Number>> {
         if (kind == CUE_YOUR_TURN) {
             return [[100, 120]];
+        } else if (kind == CUE_KEPT) {
+            return [[100, 400]];
         } else if (kind == CUE_SENT) {
             return [[100, 70], [0, 90], [100, 70]];
         } else if (kind == CUE_BYE) {
@@ -55,7 +49,7 @@ module CallLogic {
 
     // The signal's name in the log.
     function cueName(kind as Number) as String {
-        return ["sent", "speak", "error", "bye", "tap"][kind] as String;
+        return ["sent", "speak", "error", "bye", "tap", "kept"][kind] as String;
     }
 
     // What Start does in a call.
@@ -70,7 +64,7 @@ module CallLogic {
     const PRESS_SPEAK = 4;
 
     // blocked: the call is hanging up, ending, broken for good or on its way back to Computer;
-    // answering: an answer is awaited or plays; sending: the press of the last turn is on its way.
+    // answering: an answer is awaited or plays; sending: a turn of his is on its way to the server.
     function pressAction(blocked as Boolean, stalled as Boolean, recording as Boolean, answering as Boolean,
             sending as Boolean) as Number {
         if (blocked) {
@@ -85,12 +79,6 @@ module CallLogic {
             return PRESS_NONE;
         }
         return PRESS_SPEAK;
-    }
-
-    // The buzz that confirms a press Start took: the send's two short buzzes, which come once the
-    // microphone has stopped, and the tap for the rest, at once.
-    function pressCue(action as Number) as Number {
-        return action == PRESS_SEND ? CUE_SENT : CUE_TAKEN;
     }
 }
 

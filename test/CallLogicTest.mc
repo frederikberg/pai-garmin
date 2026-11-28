@@ -15,13 +15,6 @@ function onlyTransportAndServerErrorsAreRetried(logger as Logger) as Boolean {
 }
 
 (:test)
-function aConflictIsAckedRewoundOrLost(logger as Logger) as Boolean {
-    return CallLogic.afterConflict(3, 4, 0).equals("acked") && CallLogic.afterConflict(3, 7, 0).equals("acked")
-        && CallLogic.afterConflict(3, 3, 0).equals("rewind") && CallLogic.afterConflict(3, 1, 1).equals("rewind")
-        && CallLogic.afterConflict(3, 0, 2).equals("lost");
-}
-
-(:test)
 function traceKeepsAFixedNumberOfLines(logger as Logger) as Boolean {
     Trace.lines = [];
     Trace.dropped = 0;
@@ -80,11 +73,12 @@ function eachPressNamesItsBuzz(logger as Logger) as Boolean {
     var cut = CallLogic.pressAction(false, false, false, true, false) == CallLogic.PRESS_CUT;
     var waits = CallLogic.pressAction(false, false, false, false, true) == CallLogic.PRESS_NONE;
     var speak = CallLogic.pressAction(false, false, false, false, false) == CallLogic.PRESS_SPEAK;
-    // and the buzz each one gives: the send's own, the tap for the rest
-    var cues = CallLogic.pressCue(CallLogic.PRESS_SEND) == CallLogic.CUE_SENT && CallLogic.pressCue(CallLogic.PRESS_CUT) == CallLogic.CUE_TAKEN
-        && CallLogic.pressCue(CallLogic.PRESS_SPEAK) == CallLogic.CUE_TAKEN && CallLogic.pressCue(CallLogic.PRESS_RETRY) == CallLogic.CUE_TAKEN;
-    // the tap is one buzz, well under the length of "speak"
+    // the tap is one buzz, well under the length of "speak"; "kept" is one buzz well over it, and
+    // shorter than the error's
     var tap = CallLogic.buzz(CallLogic.CUE_TAKEN);
-    var distinct = tap.size() == 1 && tap[0][1] * 2 < CallLogic.buzz(CallLogic.CUE_YOUR_TURN)[0][1];
-    return none && retry && send && cut && waits && speak && cues && distinct;
+    var kept = CallLogic.buzz(CallLogic.CUE_KEPT);
+    var distinct = tap.size() == 1 && tap[0][1] * 2 < CallLogic.buzz(CallLogic.CUE_YOUR_TURN)[0][1]
+        && kept.size() == 1 && kept[0][1] >= 3 * CallLogic.buzz(CallLogic.CUE_YOUR_TURN)[0][1]
+        && kept[0][1] < CallLogic.buzz(CallLogic.CUE_ERROR)[0][1] && CallLogic.cueName(CallLogic.CUE_KEPT).equals("kept");
+    return none && retry && send && cut && waits && speak && distinct;
 }

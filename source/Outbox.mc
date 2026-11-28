@@ -183,13 +183,14 @@ module Outbox {
         return report == null ? 0 : (report["parts"] as Number) - slot(report);
     }
 
-    // The bytes the parts not yet confirmed take, counting each as a full part.
+    // The bytes the parts not yet confirmed take, counting each as a full part, and with them what
+    // the kept turns of a Computer call take: both share the budget.
     function stored() as Number {
         var n = 0;
         for (var i = 0; i < reports.size(); i++) {
             n += (reports[i]["parts"] as Number) - slot(reports[i]);
         }
-        return n * PART_BYTES;
+        return n * PART_BYTES + Kept.stored();
     }
 
     // A new recording may start: the list has a place and the budget room for two parts.

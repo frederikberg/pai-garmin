@@ -19,8 +19,8 @@ class Face {
 }
 
 // The call's state as one word in one colour: grey while the watch is not ready, green when he can
-// speak, yellow while his turn is on its way or the answer is made, blue while it plays, red when
-// something stopped. In Computer's call the words heard and spoken show under it; in a session's call
+// speak, yellow while his turn is on its way or the answer is made, orange while the watch keeps a
+// turn the server does not have yet, blue while the answer plays, red when something stopped. In Computer's call the words heard and spoken show under it; in a session's call
 // only the session's name does.
 module CallScreen {
     function face(c as CallClient) as Face {
@@ -43,6 +43,12 @@ module CallScreen {
             f.color = Graphics.COLOR_RED;
             f.body = stalled;
             f.hint = "Start: try again";
+        } else if (c.asking) {
+            // a kept turn waits for his word; nothing is recorded meanwhile
+            f.headline = "Kept turn";
+            f.color = Graphics.COLOR_ORANGE;
+            f.body = c.keptLabel();
+            f.hint = "Start: send  Back: drop";
         } else if (c.leaving()) {
             // Back in a session's call: the call goes back to Computer
             f.headline = "To Computer";
@@ -55,6 +61,11 @@ module CallScreen {
             f.headline = "Speak";
             f.color = Graphics.COLOR_GREEN;
             f.hint = "Start: send";
+        } else if (c.kept) {
+            // he pressed, and the turn is on the watch until the server has it
+            f.headline = "Kept";
+            f.color = Graphics.COLOR_ORANGE;
+            f.body = "Goes when the link is back";
         } else if (!c.hasCall()) {
             f.headline = "Connecting";
             f.color = Graphics.COLOR_LT_GRAY;
@@ -81,7 +92,8 @@ module CallScreen {
             // a notice is short-lived and says what just happened: it goes over the text and the name
             f.body = notice;
         }
-        f.foot = c.linkTrouble();
+        var keeping = c.keepingS();
+        f.foot = keeping > 0 ? "no link · keeping " + (keeping / 60) + ":" + (keeping % 60).format("%02d") : c.linkTrouble();
         return f;
     }
 }

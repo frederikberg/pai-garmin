@@ -1,6 +1,7 @@
 import Toybox.Communications;
 import Toybox.Lang;
 import Toybox.System;
+import Toybox.Time;
 import Toybox.Timer;
 
 // What the client takes from the device: the clock, the request queue, the setup and the launch
@@ -108,8 +109,11 @@ class Lane {
 // A Computer call over plain web requests: it opens the call, streams the Ogg Opus chunks of each
 // turn, sends the press that ends a turn or cuts an answer, long-polls the call's events, fetches the
 // answer's pieces for the screen to play and reports what played on the next request. Lanes keep their
-// own retry state; a call the server no longer knows (404) is replaced by a new one. Every failure and
-// retry goes to the server's log route.
+// own retry state; a call the server no longer knows (404) is replaced by a new one. A turn has an id
+// of its own and is kept (Kept) until the server has taken it: no failed request, lost call or ended
+// call stops its recording or deletes it, a new call goes on with it where the server's copy ends,
+// and one an earlier run left is offered before anything else. Every failure and retry goes to the
+// server's log route.
 class CallClient {
     // The phone link carries one request at a time, so a long wait would hold up everything behind
     // it: the events are asked for with a short wait, and the rest goes first.
@@ -118,16 +122,24 @@ class CallClient {
     // how long a press holds back for the played reports that belong before it
     const PRESS_HOLD_MS = 1500;
     const TICK_MS = 250;
-    // the longest chunk body; what the link carries while a request is out is sent in the next one
-    const CHUNK_MAX = 6144;
-    // pending audio while the link is down: about half a minute of Opus
-    const BUFFER_MAX = 65536;
+    // a part the server has not confirmed stays in memory this long, then goes to storage
+    const HOLD_MS = 3000;
+    // with no answer to his press this long after the microphone stopped, the turn counts as kept
+    const KEPT_AFTER_MS = 4000;
+    // a turn left without a press is kept when he spoke at least this long, and dropped otherwise
+    const LEAVE_KEEP_MS = 10000;
+    // a press whose turn the server could not turn into text goes again this often, this far apart
+    const PRESS_TRIES = 3;
+    const PRESS_RETRY_MS = 5000;
+    // the last line says how much the watch is keeping once the server is this far behind
+    const BEHIND_SHOW_MS = 5000;
     // fetched but not yet played audio: the piece playing and the next ones
     const UNPLAYED_MAX = 60000;
     const PIECE_TRIES = 6;
     // a piece whose answer did not come in time this often is given up
     const PIECE_TIMEOUTS = 2;
-    // with no answer from the server for this long while requests fail, the call stops and says so
+    // with no answer from the server for this long while requests fail, a call with no turn of his
+    // open stops and says so
     const LINK_LOST_MS = 40000;
     // failed turns in a row before recording stops and the cause is shown
     const MAX_FAILS = 5;
@@ -139,8 +151,6 @@ class CallClient {
     const PLAY_SLACK_MS = 800;
     const LOSS_WINDOW_MS = 20000;
     const MAX_LOSSES = 5;
-    // 409s in a row on one turn before it is given up
-    const MAX_CONFLICTS = 4;
     const NOTICE_MS = 4000;
     const STOP_WAIT_MS = 1500;
     const LOG_BATCH = 20;
@@ -152,9 +162,10 @@ class CallClient {
     const HANG_GRACE_MS = 2000;
     // a turn sent because the app was hidden too long waits at most this long for the server
     const HANG_AFTER_TURN_MS = 20000;
-    // the open is tried this often before the call is given up
+    // the open is tried this often before a call with no turn of his open is given up
     const OPEN_TRIES = 5;
-    // while the phone link is missing the open waits this long for it, asking every PHONE_POLL_MS
+    // while the phone link is missing the open asks for it every PHONE_POLL_MS, and a call with no
+    // turn of his open gives up after this long
     const PHONE_WAIT_MS = 60000;
     const PHONE_POLL_MS = 1000;
     // the open waits for the first microphone data, but not longer than this
@@ -229,8 +240,36 @@ class CallClient {
     private var _playedQueue as Array<Number> = [];
 
     private var _turn as Number = 0;
-    private var _seq as Number = 0;
     private var _turnBytes as Number = 0;
+    // the turn being recorded or on its way, until the server has taken it
+    private var _kept as Dictionary<String, Object?>? = null;
+    // a kept turn waits for his word: Start sends it, Back drops it
+    var asking as Boolean = false;
+    // he pressed, and the turn waits on the watch for the link
+    var kept as Boolean = false;
+    // he said yes to a turn the server holds back as old
+    private var _confirm as Boolean = false;
+    // the server is asked where the turn stands before any more of it goes, and that question is out
+    private var _sync as Boolean = false;
+    private var _syncOut as Boolean = false;
+    // the turn's press is queued or out as a command
+    private var _pressOut as Boolean = false;
+    // the dropped turn whose command is queued or out
+    private var _dropOut as String? = null;
+    // the command in flight
+    private var _cmdOut as Dictionary<String, Object>? = null;
+    // the server has the whole turn and is turning it into text
+    private var _transcribing as Boolean = false;
+    private var _pressTries as Number = 0;
+    private var _pressNotBefore as Number = 0;
+    // while hanging up, the drop of the turn he left was sent to the call once
+    private var _dropTried as Boolean = false;
+    // when the microphone stopped after his press
+    private var _stoppedAt as Number = 0;
+    // when the server last had every part cut so far
+    private var _caughtUpAt as Number = 0;
+    // parts went to storage since then
+    private var _behind as Boolean = false;
     private var _chunks as Array<ByteArray> = [];
     private var _chunkBytes as Number = 0;
     private var _body as ByteArray? = null;
@@ -305,28 +344,19 @@ class CallClient {
     private var _lastTick as Number = 0;
     private var _logToCall as Boolean = true;
     private var _orphanHold as Boolean = false;
-    private var _dropping as Boolean = false;
     private var _cuedSent as Boolean = false;
     private var _closedSaid as Boolean = false;
     private var _logBatch as Number = 0;
     private var _failStreak as Number = 0;
     private var _lossTimes as Array<Number> = [];
     private var _fatalNotSet as Boolean = false;
-    private var _bufferFullLogged as Boolean = false;
     private var _requests as Number = 0;
     private var _autoAt as Number = 0;
 
     private var _press as Number = 0;
     // the last press sent before the current turn began; the server holds the turn's audio for it
     private var _afterPress as Number = 0;
-    // the turn's chunks that are acknowledged, kept (bounded) in case the server asks for them again
-    private var _sentBodies as Array<ByteArray> = [];
-    private var _sentBytes as Number = 0;
-    private var _sentBase as Number = 0;
     private var _logHold as Boolean = false;
-    private var _conflicts as Number = 0;
-    // bodies sent before, to go again with their own numbers
-    private var _resend as Array<ByteArray> = [];
     private var _holdUntil as Number = 0;
     private var _commands as Array<Dictionary<String, Object>> = [];
     private var _hangId as String? = null;
@@ -348,10 +378,92 @@ class CallClient {
         Trace.active = true;
         Idle.logStale = true;
         _env.startClock(method(:tick), TICK_MS);
-        // listening begins before the call exists; the audio is kept until it does, and the open
-        // goes out once the microphone has delivered
+        begin();
+    }
+
+    // A turn an earlier call left on the watch is offered first: he says whether it goes, and nothing
+    // is recorded until then. Otherwise listening begins before the call exists; the audio is kept
+    // until it does, and the open goes out once the microphone has delivered.
+    private function begin() as Void {
+        var waiting = Kept.waiting();
+        if (waiting != null) {
+            _kept = waiting;
+            _turn += 1;
+            _afterPress = _press;
+            _sync = true;
+            _endPending = false;
+            _transcribing = false;
+            kept = false;
+            ask("turn_offered");
+            return;
+        }
         micFirst();
         startTurn();
+    }
+
+    // The kept turn waits for his word, with the buzz that says so.
+    private function ask(ev as String) as Void {
+        var turn = _kept;
+        if (turn == null) {
+            return;
+        }
+        asking = true;
+        _endPending = false;
+        kept = false;
+        Trace.add(ev, {"id" => turn["id"] as String, "age_s" => Time.now().value() - Kept.num(turn, "at"),
+            "ms" => Kept.num(turn, "ms"), "unsent" => Kept.unsent(turn)});
+        Kept.persist(turn);
+        _io.cue.invoke(CallLogic.CUE_KEPT);
+        changed();
+    }
+
+    // His word on the turn that waits: Start sends it, also when the server holds it back as old;
+    // Back drops it, and listening begins.
+    function answer(send as Boolean) as Void {
+        var turn = _kept;
+        if (!asking || turn == null) {
+            return;
+        }
+        asking = false;
+        Trace.add("turn_answer", {"id" => turn["id"] as String, "send" => send});
+        _io.cue.invoke(CallLogic.CUE_TAKEN);
+        if (send) {
+            _confirm = true;
+            _endPending = true;
+            _endPress = 0;
+            _pressTries = 0;
+            _pressNotBefore = 0;
+            _cuedSent = false;
+            _pressAt = _env.now();
+            _stoppedAt = _pressAt;
+            if (!(turn["pressed"] instanceof Number)) {
+                turn["pressed"] = Time.now().value();
+            }
+        } else {
+            Kept.drop(turn);
+            _kept = null;
+            _sync = false;
+            begin();
+        }
+        pump();
+        changed();
+    }
+
+    // What the screen says about the turn that waits for his word.
+    function keptLabel() as String {
+        var turn = _kept;
+        return turn != null ? Kept.label(turn) : "";
+    }
+
+    // How long the watch has been keeping audio the server does not have yet, in seconds; 0 while
+    // the server keeps up.
+    function keepingS() as Number {
+        var turn = _kept;
+        if (turn == null || !recording || Kept.unsent(turn) == 0) {
+            return 0;
+        }
+        var ms = _env.now() - _caughtUpAt;
+        return ms >= BEHIND_SHOW_MS ? ms / 1000 : 0;
     }
 
     // The next open waits for the first microphone data (at most OPEN_WAIT_MS).
@@ -361,11 +473,16 @@ class CallClient {
     }
 
     // The Start button: send the turn that is being recorded, cut an answer, begin a turn that did not
-    // begin by itself, or try again after a stop. Every press it takes buzzes (CallLogic.pressCue): the
-    // send when the microphone has stopped, the others at once. False when there was nothing to press for.
+    // begin by itself, try again after a stop, or send a kept turn that waits for his word. Every press
+    // it takes buzzes: the tap at once, a send once the server has the turn ("sent") or the watch
+    // knows it keeps it ("kept"). False when there was nothing to press for.
     function press() as Boolean {
-        var action = CallLogic.pressAction(fatal != null || _closing || _ending || _leaving || _gone, stalled != null, recording,
-            busyAnswering(), _endPending);
+        if (asking && !_closing) {
+            answer(true);
+            return true;
+        }
+        var action = CallLogic.pressAction(fatal != null || _closing || _ending || _leaving, stalled != null, recording,
+            busyAnswering(), _kept != null);
         if (action == CallLogic.PRESS_NONE) {
             return false;
         }
@@ -380,8 +497,8 @@ class CallClient {
             _failingSince = -1;
         }
         if (action != CallLogic.PRESS_SEND) {
-            // the send's buzz waits for the microphone to stop, so it is never in the recording
-            _io.cue.invoke(CallLogic.pressCue(action));
+            // a send buzzes once the server has the turn, or once the watch knows it keeps it
+            _io.cue.invoke(CallLogic.CUE_TAKEN);
         }
         if (action == CallLogic.PRESS_SEND) {
             endTurn();
@@ -389,7 +506,7 @@ class CallClient {
             cut();
         } else if (!recording) {
             _turnSent = false;
-            startTurn();
+            begin();
         }
         return true;
     }
@@ -411,17 +528,18 @@ class CallClient {
     // True from Start until the server says what it does with the turn: the press is on its way, or
     // taken and not yet answered by a new state.
     function sending() as Boolean {
-        return _endPending || _turnSent;
+        return _endPending || _turnSent || _transcribing;
     }
 
-    // A new call in place of the current one.
+    // A new call in place of the current one. A turn of his that is open goes on in it.
     function reconnect() as Void {
         Trace.add("reconnect", null);
         var old = _call;
         resetCall();
         _hangId = old;
-        micFirst();
-        startTurn();
+        if (_kept == null) {
+            begin();
+        }
     }
 
     // Back in Computer's call: the buzz that says the call is over, and the hang-up.
@@ -432,13 +550,14 @@ class CallClient {
         hangUp();
     }
 
-    // The app was hidden for too long: what is being said goes to the server as the turn, so it is
-    // not lost, and the call hangs up once the server has the press (or after HANG_AFTER_TURN_MS).
+    // The app was hidden for too long: what is being said goes to the server as the turn, and the
+    // call hangs up once the server has answered the press (or after HANG_AFTER_TURN_MS, with the
+    // turn kept on the watch).
     function endAfterTurn() as Void {
         if (_closing || _hangAfterTurnAt >= 0) {
             return;
         }
-        if (recording && _turnBytes > 0 && _call != null) {
+        if (recording && _turnBytes > 0) {
             Trace.add("end_after_turn", {"bytes" => _turnBytes});
             _hangAfterTurnAt = _env.now();
             if (!press()) {
@@ -457,9 +576,10 @@ class CallClient {
         _closedAt = _env.now();
         Trace.add("hangup", null);
         summarize();
+        leaveTurn("hangup");
         Trace.persist();
-        stopCapture();
         _io.stopPlayback.invoke();
+        clearCommands();
         for (var i = 0; i < _lanes.size(); i++) {
             // an open still on its way is answered later: its call is hung up then
             if (i != OPEN) {
@@ -475,22 +595,60 @@ class CallClient {
         pump();
     }
 
+    // The app ends: the turn stays on the watch as it is, for the next start to offer.
+    function appStopped() as Void {
+        if (!_closing) {
+            leaveTurn("exit");
+        }
+    }
+
+    // The call lets go of the turn. The microphone stops; a turn he pressed for, one that waits for
+    // his word and one he spoke for LEAVE_KEEP_MS or longer stay on the watch, and the next start
+    // offers them. A shorter one without a press is dropped, as a hang-up always did.
+    private function leaveTurn(why as String) as Void {
+        if (recording || _captureOpen) {
+            stopMic();
+        }
+        var turn = _kept;
+        if (turn != null) {
+            cutParts(true);
+            var pressed = turn["pressed"] instanceof Number;
+            var ms = spokenMs();
+            var keep = pressed || asking || ms >= LEAVE_KEEP_MS;
+            Trace.add("turn_left", {"id" => turn["id"] as String, "why" => why, "kept" => keep, "ms" => ms,
+                "pressed" => pressed, "unsent" => Kept.unsent(turn)});
+            if (!keep) {
+                Kept.drop(turn);
+            } else {
+                if (recording) {
+                    turn["ms"] = ms;
+                }
+                Kept.persist(turn);
+            }
+        }
+        _kept = null;
+        recording = false;
+        _captureOpen = false;
+        _endPending = false;
+        _transcribing = false;
+        asking = false;
+        kept = false;
+        _sync = false;
+        _chunks = [];
+        _chunkBytes = 0;
+        _body = null;
+        _bodyEnd = 0;
+        abandon(AUDIO);
+    }
+
+    // How long he has spoken in the turn being recorded.
+    private function spokenMs() as Number {
+        return recording && micLive ? _env.now() - recordingSince : 0;
+    }
+
     // A chunk of the turn's Ogg Opus stream from the capture.
     function chunk(data as ByteArray) as Void {
-        if ((!recording && !_captureOpen) || _dropping) {
-            return;
-        }
-        if (_chunkBytes + data.size() > BUFFER_MAX) {
-            // what follows would sit behind a hole in the stream: the rest of the turn is dropped
-            _dropping = true;
-            if (!_bufferFullLogged) {
-                _bufferFullLogged = true;
-                Trace.add("buffer_full", {"bytes" => _chunkBytes});
-            }
-            if (recording) {
-                setNotice("Link too slow");
-                endTurn();
-            }
+        if ((!recording && !_captureOpen) || _kept == null) {
             return;
         }
         _micSeen = true;
@@ -516,7 +674,54 @@ class CallClient {
         _chunks.add(data);
         _chunkBytes += data.size();
         _turnBytes += data.size();
+        cutParts(false);
         pump();
+    }
+
+    // The audio the microphone delivered becomes the turn's next parts: a small one as soon as the
+    // server has everything before it and the link is free, so a turn leaves the watch while it is
+    // spoken; a full one while the server is behind; all that is left once the microphone has stopped.
+    // A part cut while the server has been behind for HOLD_MS goes to storage at once.
+    private function cutParts(all as Boolean) as Void {
+        var turn = _kept;
+        if (turn == null) {
+            return;
+        }
+        while (_chunks.size() > 0) {
+            var live = _call != null && !_gone && !_sync && !_endPending && Kept.unsent(turn) == 0 && !_lanes[AUDIO].busy;
+            if (!all && _chunkBytes < Kept.PART_MAX && !(live && _chunkBytes >= AUDIO_MIN)) {
+                break;
+            }
+            var body = new [0]b;
+            while (_chunks.size() > 0 && (body.size() == 0 || body.size() + _chunks[0].size() <= Kept.PART_MAX)) {
+                var c = _chunks[0];
+                _chunks = _chunks.slice(1, null) as Array<ByteArray>;
+                _chunkBytes -= c.size();
+                body.addAll(c);
+            }
+            if (Kept.unsent(turn) == 0) {
+                _caughtUpAt = _env.now();
+            }
+            Kept.add(turn, body);
+            if (_env.now() - _caughtUpAt >= HOLD_MS) {
+                store(turn);
+            }
+        }
+    }
+
+    // The turn's parts in memory go to storage. When the storage has no room for more, the
+    // recording ends there, as his press would end it.
+    private function store(turn as Dictionary<String, Object?>) as Void {
+        if (!_behind) {
+            _behind = true;
+            Trace.add("turn_behind", {"id" => turn["id"] as String, "unsent" => Kept.unsent(turn), "call" => _call != null});
+        }
+        var ok = Kept.persist(turn);
+        if ((!ok || !Kept.hasRoom()) && recording) {
+            Trace.add("turn_storage_full", {"kept_bytes" => Kept.stored(), "stored" => ok});
+            setNotice("Storage full");
+            endTurn();
+        }
     }
 
     function captureEnded() as Void {
@@ -526,26 +731,62 @@ class CallClient {
                 _stopMs = _env.now() - _pressAt;
             }
             Trace.debug("capture_state", {"state" => "stopped"});
-            cueSent();
+            micStopped();
             pump();
         }
     }
 
-    // The turn is over for the microphone: a short cue says the press was taken, the send's own when
-    // there is something to send, the tap when the microphone never delivered. It comes when the
-    // capture has stopped (or was given up waiting for), so the buzz is never in the recording.
-    private function cueSent() as Void {
-        if (_endPending && !_cuedSent) {
-            _cuedSent = true;
-            _io.cue.invoke(_turnBytes > 0 ? CallLogic.CUE_SENT : CallLogic.CUE_TAKEN);
+    // The microphone has stopped after his press (or was given up waiting for): from here a buzz is
+    // never in the recording. A turn in which the microphone never delivered gets its tap now; any
+    // other buzzes "sent" once the server has it, or "kept" when that does not happen soon.
+    private function micStopped() as Void {
+        if (_endPending && _stoppedAt == 0) {
+            _stoppedAt = _env.now();
+            if (_turnBytes == 0 && !_cuedSent) {
+                _cuedSent = true;
+                _io.cue.invoke(CallLogic.CUE_TAKEN);
+            }
         }
+    }
+
+    // The server has the turn: the two short buzzes, once a turn.
+    private function cueSent() as Void {
+        if (!_cuedSent) {
+            _cuedSent = true;
+            _io.cue.invoke(CallLogic.CUE_SENT);
+        }
+    }
+
+    // His press is not answered: at once when the watch knows the link is down, else after
+    // KEPT_AFTER_MS. The turn goes to storage, the kept buzz says the watch has it, and the screen
+    // says so until the server has it.
+    private function keepIfUnanswered(now as Number) as Void {
+        var turn = _kept;
+        if (turn == null || !_endPending || kept || _cuedSent || _captureOpen || _stoppedAt == 0) {
+            return;
+        }
+        if (now - _stoppedAt >= KEPT_AFTER_MS || linkDown()) {
+            cutParts(true);
+            kept = true;
+            Trace.add("turn_kept", {"id" => turn["id"] as String, "unsent" => Kept.unsent(turn), "call" => _call != null,
+                "waited_ms" => now - _stoppedAt});
+            Kept.persist(turn);
+            _io.cue.invoke(CallLogic.CUE_KEPT);
+            changed();
+        }
+    }
+
+    // Nothing can reach the server right now, as far as the watch can tell.
+    private function linkDown() as Boolean {
+        return _call == null || _gone || _failingSince >= 0 || _lanes[AUDIO].failures > 0 || _lanes[CMD].failures > 0
+            || _env.check() != 0;
     }
 
     // The watch stopped the microphone while the app was hidden, in the middle of a turn: it starts
     // again in the same turn, and its new stream follows the old one (the server reads chained
     // streams). Nothing while the microphone still runs or the turn is over.
     function resumeMic() as Void {
-        if (!recording || _captureOpen || _endPending || _closing || _dropping) {
+        if (!recording || _captureOpen || _endPending || _closing) {
             return;
         }
         var started = _io.startCapture.invoke();
@@ -562,9 +803,8 @@ class CallClient {
         Trace.add("capture_error", {"code" => code});
         Trace.debug("capture_state", {"state" => "error", "code" => code});
         if (recording) {
-            recording = false;
-            _captureOpen = false;
-            discardTurn();
+            // what he said up to here stays on the watch
+            leaveTurn("capture_error");
             recordFailed("Microphone error " + code);
         }
         changed();
@@ -710,11 +950,18 @@ class CallClient {
 
     // The back command goes once the turn it ended has left the watch.
     private function sendBackIfDrained() as Void {
-        if (_backPending == 0 || _captureOpen || _chunks.size() > 0 || _body != null || _resend.size() > 0 || _lanes[AUDIO].busy) {
+        var turn = _kept;
+        if (_backPending == 0 || _captureOpen || _chunks.size() > 0 || _sync || _lanes[AUDIO].busy
+                || (turn != null && Kept.unsent(turn) > 0)) {
             return;
         }
         queueBack(_backPending);
         _backPending = 0;
+        if (turn != null) {
+            // the server keeps what it heard in the session's draft; the turn itself is over
+            Kept.drop(turn);
+            _kept = null;
+        }
     }
 
     // One line for the turn that ended: how long the microphone took to deliver, the bytes sent, how long
@@ -780,30 +1027,35 @@ class CallClient {
         micLive = false;
         _goPending = true;
         _turnStartedAt = _env.now();
-        _seq = 0;
         _turnBytes = 0;
         _chunks = [];
         _chunkBytes = 0;
         _body = null;
-        _resend = [];
-        _sentBodies = [];
-        _sentBytes = 0;
-        _sentBase = 0;
-        _conflicts = 0;
         _endPress = 0;
         _bodyEnd = 0;
+        _endPending = false;
+        _stoppedAt = 0;
+        _cuedSent = false;
+        _confirm = false;
+        _sync = false;
+        _transcribing = false;
+        _pressTries = 0;
+        _pressNotBefore = 0;
+        _behind = false;
+        _caughtUpAt = _turnStartedAt;
+        kept = false;
         _afterPress = _press;
         abandon(AUDIO);
         heard = "";
         spoken = "";
-        _bufferFullLogged = false;
-        _dropping = false;
         var started = _io.startCapture.invoke();
         if (started == 0) {
             recording = true;
             _captureOpen = true;
             recordingSince = _env.now();
-            Trace.add("turn_start", {"turn" => _turn});
+            var turn = Kept.open();
+            _kept = turn;
+            Trace.add("turn_start", {"turn" => _turn, "id" => turn["id"] as String});
             Trace.debug("capture_state", {"state" => "started"});
         } else if (started == 1) {
             recording = false;
@@ -821,12 +1073,21 @@ class CallClient {
     }
 
     private function endTurn() as Void {
+        var turn = _kept;
+        if (turn != null) {
+            turn["ms"] = spokenMs();
+            turn["pressed"] = Time.now().value();
+        }
         recording = false;
         _cuedSent = false;
+        _stoppedAt = 0;
         _endPending = true;
         _pressAt = _env.now();
         _stopAt = _pressAt + STOP_WAIT_MS;
         stopMic();
+        if (!_captureOpen) {
+            micStopped();
+        }
         pump();
         changed();
     }
@@ -839,47 +1100,198 @@ class CallClient {
         _stopping = false;
     }
 
-    private function stopCapture() as Void {
-        if (recording || _captureOpen) {
-            stopMic();
-        }
-        recording = false;
-        _captureOpen = false;
-        _endPending = false;
-    }
-
-    private function discardTurn() as Void {
-        if (_backPending > 0) {
-            // what was left of the turn is gone: the back command need not wait for it
-            queueBack(_backPending);
-            _backPending = 0;
-        }
-        _chunks = [];
-        _chunkBytes = 0;
-        _body = null;
+    // The commands of the call that is gone or over are not sent; what they were for is asked again
+    // from the turn's own state.
+    private function clearCommands() as Void {
+        _commands = [];
+        _cmdOut = null;
+        _pressOut = false;
+        _syncOut = false;
+        _dropOut = null;
         _bodyEnd = 0;
-        _resend = [];
-        _sentBodies = [];
-        _sentBytes = 0;
-        _endPending = false;
-        abandon(AUDIO);
+        _endPress = 0;
     }
 
-    // The turn is over for the watch once its audio is acknowledged: the press follows.
+    // Once the server has every part of the turn he pressed for, the press follows as a command,
+    // unless it rode on the last part. A turn in which the microphone delivered nothing is over.
     private function sendPressIfDrained() as Void {
-        if (!_endPending || _captureOpen || _chunks.size() > 0 || _body != null || _resend.size() > 0 || _lanes[AUDIO].busy) {
+        var turn = _kept;
+        if (turn == null || !_endPending || _captureOpen || _chunks.size() > 0 || _closing) {
             return;
         }
-        _endPending = false;
-        if (_turnBytes == 0) {
+        if (Kept.num(turn, "parts") == 0) {
+            _endPending = false;
+            _kept = null;
+            Kept.forget(turn);
             Trace.add("empty_turn", null);
             setNotice("Heard nothing");
             return;
         }
-        queuePress(endPress());
-        _turnSent = true;
-        _turnSentPoll = -1;
-        changed();
+        if (_pressOut || _bodyEnd > 0 || _call == null || _gone || _sync || Kept.unsent(turn) > 0 || _lanes[AUDIO].busy
+                || _env.now() < _pressNotBefore) {
+            return;
+        }
+        _pressOut = true;
+        var press = {"action" => "press", "press" => endPress(), "turn" => _turn, "id" => turn["id"] as String,
+            "chunks" => Kept.num(turn, "parts"), "ago" => ago(turn)} as Dictionary<String, Object>;
+        if (_confirm) {
+            press["confirm"] = true;
+        }
+        _commands.add(press);
+        _holdUntil = _env.now() + PRESS_HOLD_MS;
+        Trace.add("press", {"press" => _endPress, "turn" => _turn, "ago" => press["ago"], "confirm" => _confirm});
+    }
+
+    // How many seconds ago he pressed for the turn.
+    private function ago(turn as Dictionary<String, Object?>) as Number {
+        var pressed = turn["pressed"];
+        var s = pressed instanceof Number ? Time.now().value() - pressed : 0;
+        return s > 0 ? s : 0;
+    }
+
+    // A dropped turn the server has not heard of is told to it, one at a time.
+    private function queueDrop() as Void {
+        if (_dropOut == null && _call != null && !_gone) {
+            var id = Kept.dropId();
+            if (id != null) {
+                _dropOut = id;
+                _commands.add({"action" => "drop", "id" => id} as Dictionary<String, Object>);
+            }
+        }
+    }
+
+    // In a new call, and for a turn an earlier run left, the server says where the turn stands
+    // before any more of it goes.
+    private function queueSync() as Void {
+        var turn = _kept;
+        if (turn != null && _sync && !_syncOut && _call != null && !_gone) {
+            _syncOut = true;
+            _commands.add({"action" => "turn", "id" => turn["id"] as String} as Dictionary<String, Object>);
+        }
+    }
+
+    // Where the server says the turn stands, from its answer to a press, to the question, or from
+    // the call's events.
+    private function turnIs(state as String?, error as Object?, via as String) as Void {
+        var turn = _kept;
+        if (turn == null) {
+            return;
+        }
+        Trace.add("turn_state", {"id" => turn["id"] as String, "state" => state, "via" => via, "error" => error});
+        if ("taken".equals(state)) {
+            // handed to Computer, once: the turn is over for the watch and the answer is awaited
+            var offered = asking;
+            cueSent();
+            Kept.forget(turn);
+            _kept = null;
+            _endPending = false;
+            _transcribing = false;
+            _sync = false;
+            asking = false;
+            kept = false;
+            if (offered) {
+                // an earlier run's press had reached the server after all
+                setNotice("Was sent already");
+                begin();
+                return;
+            }
+            _turnSent = true;
+            _turnSentPoll = -1;
+            pressTaken();
+        } else if ("dropped".equals(state)) {
+            leaveTurn("dropped");
+        } else if ("held".equals(state)) {
+            // pressed too long ago to run unasked: he says whether it goes
+            if (!asking) {
+                ask("turn_held");
+            }
+        } else if ("pressed".equals(state) && error != null) {
+            // the server could not turn it into text: the press goes again, then he is asked
+            _transcribing = false;
+            _pressTries += 1;
+            setNotice("Server could not read it");
+            if (_pressTries >= PRESS_TRIES) {
+                _pressTries = 0;
+                ask("turn_unread");
+            } else {
+                _endPending = true;
+                _endPress = 0;
+                _pressNotBefore = _env.now() + PRESS_RETRY_MS;
+            }
+        } else if ("pressed".equals(state) && !asking) {
+            // the server has all of it and turns it into text; the events say when Computer has it
+            cueSent();
+            kept = false;
+            _endPending = false;
+            _transcribing = true;
+        }
+    }
+
+    // The server's answer to a press for the turn. One without a state is a server that knows no
+    // kept turns and has taken it.
+    private function pressAnswered(data as Dictionary or String or ByteArray or Null) as Void {
+        _pressOut = false;
+        _endPress = 0;
+        // a press that did not finish the turn is not repeated at once
+        _pressNotBefore = _env.now() + PRESS_RETRY_MS;
+        var state = data instanceof Dictionary ? data["turn"] as Object? : null;
+        turnIs(state instanceof String ? state : "taken", null, "press");
+        if (_hangAfterTurnAt >= 0) {
+            hangUp();
+        }
+    }
+
+    // The server's answer to where the turn stands: the watch goes on from the part it names. A
+    // count below what the server confirmed before, or a part the storage no longer has, cannot be
+    // repaired.
+    private function synced(data as Dictionary or String or ByteArray or Null) as Void {
+        var turn = _kept;
+        _syncOut = false;
+        if (turn == null) {
+            return;
+        }
+        _sync = false;
+        var state = data instanceof Dictionary ? data["turn"] as Object? : null;
+        var count = Outcome.number(data instanceof Dictionary ? data["next_seq"] as Object? : null);
+        var next = count != null ? count : 0;
+        Trace.add("turn_sync", {"id" => turn["id"] as String, "state" => state, "next" => next,
+            "sent" => Kept.num(turn, "sent"), "parts" => Kept.num(turn, "parts")});
+        if ("taken".equals(state) || "dropped".equals(state) || "held".equals(state)) {
+            turnIs(state as String, null, "sync");
+        } else if (next < Kept.num(turn, "sent")) {
+            lostTurn("server");
+        } else {
+            Kept.confirm(turn, next);
+            caughtUp(turn);
+        }
+    }
+
+    // The turn cannot be completed any more: he hears and sees it, and the turn goes.
+    private function lostTurn(why as String) as Void {
+        var turn = _kept;
+        if (turn == null) {
+            return;
+        }
+        Trace.add("turn_lost", {"id" => turn["id"] as String, "why" => why, "sent" => Kept.num(turn, "sent"),
+            "parts" => Kept.num(turn, "parts")});
+        Kept.drop(turn);
+        _kept = null;
+        leaveTurn(why);
+        setNotice("Lost audio, say it again");
+        _io.cue.invoke(CallLogic.CUE_ERROR);
+    }
+
+    // The server has every part cut so far.
+    private function caughtUp(turn as Dictionary<String, Object?>) as Void {
+        if (Kept.unsent(turn) > 0) {
+            return;
+        }
+        if (_behind) {
+            _behind = false;
+            Trace.add("turn_caught_up", {"id" => turn["id"] as String, "behind_ms" => _env.now() - _caughtUpAt,
+                "parts" => Kept.num(turn, "parts")});
+        }
+        _caughtUpAt = _env.now();
     }
 
     // The number of the press that ends the current turn: the same one however often it is sent, on
@@ -892,6 +1304,7 @@ class CallClient {
         return _endPress;
     }
 
+    // The press that cuts an answer.
     private function queuePress(number as Number) as Void {
         _commands.add({"action" => "press", "press" => number, "turn" => _turn} as Dictionary<String, Object>);
         _holdUntil = _env.now() + PRESS_HOLD_MS;
@@ -905,9 +1318,6 @@ class CallClient {
             _sentMs = _env.now() - _pressAt;
         }
         _failStreak = 0;
-        if (_hangAfterTurnAt >= 0) {
-            hangUp();
-        }
     }
 
     // The answer is cut: playback stops now, the press goes out, and the next turn is recorded.
@@ -974,9 +1384,19 @@ class CallClient {
         if ((_endPending || _backPending > 0) && _captureOpen && now >= _stopAt) {
             Trace.add("capture_no_complete", null);
             _captureOpen = false;
-            cueSent();
+            micStopped();
         }
-        if (_failingSince >= 0 && now - _failingSince >= LINK_LOST_MS && _call != null && stalled == null && fatal == null) {
+        keepIfUnanswered(now);
+        var turn = _kept;
+        if (turn != null && Kept.held.size() > 0 && Kept.unsent(turn) > 0 && now - _caughtUpAt >= HOLD_MS) {
+            // the server has been behind for a while: what waits in memory goes to storage
+            store(turn);
+        }
+        if (keepingS() > 0) {
+            changed();
+        }
+        if (_failingSince >= 0 && now - _failingSince >= LINK_LOST_MS && _call != null && stalled == null && fatal == null
+                && _kept == null) {
             // nothing gets through any more: the call says so instead of repeating requests unseen
             Trace.add("link_lost", {"ms" => now - _failingSince});
             stopForGood("Phone link lost", true);
@@ -984,7 +1404,7 @@ class CallClient {
         if (_fatalNotSet && _env.check() != 1) {
             fatal = null;
             _fatalNotSet = false;
-            startTurn();
+            begin();
         }
         endPlaybackByTimer(now);
         if (now - _lastMem > MEM_EVERY_MS) {
@@ -1015,7 +1435,7 @@ class CallClient {
 
     private function autoRecord(now as Number) as Void {
         // Computer listens after every answer; a session's call records only in its recording phase
-        if (!_closing && !_ending && !_gone && _call != null && !recording && !_endPending && !_turnSent && !_leaving
+        if (!_closing && !_ending && !_gone && _call != null && !recording && _kept == null && !_turnSent && !_leaving
                 && (engine.equals("listening") || engine.equals("recording"))
                 && !playbackActive && !moreToPlay() && now >= _autoAt && fatal == null && stalled == null
                 && !_io.busy.invoke()) {
@@ -1058,15 +1478,27 @@ class CallClient {
         if (_stopping) {
             return;
         }
+        // after his press the capture has TAIL_WAIT_MS to hand over its last data, so that one
+        // request carries all of it
+        cutParts((!recording && !_captureOpen) || (_endPending && _env.now() - _pressAt >= TAIL_WAIT_MS));
         sendPressIfDrained();
         sendBackIfDrained();
         var call = _call;
         if (_closing || _ending) {
+            var hang = _hangId;
+            if (hang != null && _dropOut == null && !_dropTried && Kept.dropId() != null && ready(CMD)) {
+                // the turn he left without a press: the server hears that it is dropped, once, before
+                // the hang-up; without an answer the next call tells it
+                _dropTried = true;
+                queueDropTo(hang);
+            }
             if (_hangId != null && ready(HANG)) {
                 sendHang();
             }
             return;
         }
+        queueSync();
+        queueDrop();
         if (_hangId != null && ready(HANG)) {
             sendHang();
         }
@@ -1099,7 +1531,8 @@ class CallClient {
         if (_commands.size() > 0 && ready(CMD) && (_playedQueue.size() == 0 || now >= _holdUntil)) {
             sendCommand(call);
         }
-        if (now - _lastEventsAt >= EVENTS_MAX_GAP_MS && ready(EVENTS)) {
+        if ((_gone || now - _lastEventsAt >= EVENTS_MAX_GAP_MS) && ready(EVENTS)) {
+            // also at once after a route said the call is gone: the events say whether it ended
             sendEvents(call);
         }
         if (_playedQueue.size() > 0 && _pieces.size() == 0 && !_expectPiece && ready(EVENTS)) {
@@ -1128,20 +1561,16 @@ class CallClient {
 
     // His turn is on its way to the server: being recorded, or its audio or its press not yet taken.
     private function turnOpen() as Boolean {
-        return recording || _captureOpen || _endPending || _commands.size() > 0 || _chunks.size() > 0 || _body != null
-            || _resend.size() > 0;
+        var turn = _kept;
+        return recording || _captureOpen || _endPending || _commands.size() > 0 || _chunks.size() > 0
+            || (turn != null && !asking && Kept.unsent(turn) > 0);
     }
 
-    // Audio is sent in requests of about a second while he speaks, and at once when the turn is over.
+    // The next part the server lacks goes once the server has said where the turn stands, and he has
+    // said that a turn waiting for his word goes.
     private function audioDue() as Boolean {
-        if (_body != null || _resend.size() > 0) {
-            return true;
-        }
-        if (_endPending && _captureOpen && _env.now() - _pressAt < TAIL_WAIT_MS) {
-            // the capture is about to hand over its last data: one request then carries it all
-            return false;
-        }
-        return _chunks.size() > 0 && (_chunkBytes >= AUDIO_MIN || !recording);
+        var turn = _kept;
+        return turn != null && !_sync && !_gone && !asking && Kept.unsent(turn) > 0;
     }
 
     private function url(path as String) as String {
@@ -1225,36 +1654,48 @@ class CallClient {
     }
 
     private function sendCommand(call as String) as Void {
+        _cmdOut = _commands[0];
         jsonPost(CMD, "/" + call + "/command", _commands[0] as Dictionary<Object, Object>);
     }
 
+    // While the call hangs up: the drop of the turn he left goes to the call that is ending.
+    private function queueDropTo(call as String) as Void {
+        var id = Kept.dropId();
+        if (id != null) {
+            _dropOut = id;
+            _cmdOut = {"action" => "drop", "id" => id} as Dictionary<String, Object>;
+            _lanes[CMD].failures = 0;
+            _lanes[CMD].notBefore = 0;
+            jsonPost(CMD, "/" + call + "/command", _cmdOut as Dictionary<Object, Object>);
+        }
+    }
+
+    // The next part the server lacks, under its number in the turn. The press that ends the turn
+    // rides on its last part, unless he had to confirm the turn, which only a command can say.
     private function sendAudio(call as String) as Void {
-        if (_body == null && _resend.size() > 0) {
-            _body = _resend[0];
-            _resend = _resend.slice(1, null) as Array<ByteArray>;
-        } else if (_body == null) {
-            var body = new [0]b;
-            while (_chunks.size() > 0 && (body.size() == 0 || body.size() + _chunks[0].size() <= CHUNK_MAX)) {
-                var c = _chunks[0];
-                _chunks = _chunks.slice(1, null) as Array<ByteArray>;
-                _chunkBytes -= c.size();
-                body.addAll(c);
-            }
-            _body = body;
+        var turn = _kept;
+        if (turn == null) {
+            return;
         }
-        if (_bodyEnd == 0 && _endPending && !_captureOpen && _chunks.size() == 0
-                && _resend.size() == 0 && _turnBytes > 0) {
+        var n = Kept.num(turn, "sent");
+        var body = Kept.partOf(turn, n);
+        if (body == null) {
+            lostTurn("storage");
+            return;
+        }
+        _body = body;
+        if (_bodyEnd == 0 && _endPending && !_captureOpen && _chunks.size() == 0 && !_confirm && !_pressOut
+                && n == Kept.num(turn, "parts") - 1 && _env.now() >= _pressNotBefore) {
             // the turn's last audio: the press that ends it rides along
-            var first = _endPress == 0;
             _bodyEnd = endPress();
-            if (first) {
-                Trace.add("press", {"press" => _bodyEnd, "turn" => _turn, "on" => "audio"});
-            }
+            Trace.add("press", {"press" => _bodyEnd, "turn" => _turn, "on" => "audio", "ago" => ago(turn)});
         }
+        turn["out"] = true;
         var options = jsonOptions("audio/ogg");
-        options[:body] = _body as Object;
-        go(AUDIO, Communications.HTTP_REQUEST_METHOD_POST, "/" + call + "/audio?turn=" + _turn + "&seq=" + _seq
-            + "&after_press=" + _afterPress + (_bodyEnd > 0 ? "&end=" + _bodyEnd : ""), null, options);
+        options[:body] = body as Object;
+        go(AUDIO, Communications.HTTP_REQUEST_METHOD_POST, "/" + call + "/audio?turn=" + _turn + "&seq=" + n
+            + "&after_press=" + _afterPress + "&id=" + (turn["id"] as String)
+            + (_bodyEnd > 0 ? "&end=" + _bodyEnd + "&ago=" + ago(turn) : ""), null, options);
     }
 
     private function sendPiece(call as String) as Void {
@@ -1420,20 +1861,34 @@ class CallClient {
                     _orphanHold = true;
                 }
             } else if (lane == AUDIO || lane == CMD) {
-                // no new turn until the events, asked at once, have said it
+                // nothing more goes to this call until the events, asked at once, have said whether
+                // it ended; the turn goes on being recorded and kept meanwhile
                 _gone = true;
-                stopCapture();
-                discardTurn();
-                _commands = [];
+                _body = null;
+                clearCommands();
                 _turnSent = false;
                 _lastEventsAt = 0;
             } else {
                 drop(lane);
             }
         } else if (code == 422 && lane == AUDIO) {
-            abandonTurn("Lost audio, try again", "Server rejects the audio");
-        } else if (code == 409 && lane == AUDIO) {
-            conflict(data);
+            // the call cannot use the part, but the server stored it: the turn goes on, and its press
+            // has the server read the stored audio as a whole
+            Trace.add("turn_part_unread", {"seq" => _kept != null ? Kept.num(_kept as Dictionary<String, Object?>, "sent") : -1});
+            partStored(null);
+        } else if (code == 409 && (lane == AUDIO || (lane == CMD && isTurnCommand("press")))) {
+            // the server is somewhere else in the turn, or the turn is finished: it is asked, since
+            // the body of an error answer may not reach the watch
+            Trace.add("turn_conflict", {"lane" => _lanes[lane].name});
+            _body = null;
+            if (lane == CMD) {
+                dropCommand();
+            }
+            _bodyEnd = 0;
+            _endPress = 0;
+            _sync = true;
+        } else if (code == 413 && lane == AUDIO) {
+            capTurn();
         } else if (CallLogic.retryable(code)) {
             failed(lane, code);
         } else {
@@ -1441,6 +1896,75 @@ class CallClient {
             Trace.add("refused", {"lane" => _lanes[lane].name, "code" => code});
             drop(lane);
         }
+    }
+
+    // The command in flight is one for a kept turn, of this action.
+    private function isTurnCommand(action as String) as Boolean {
+        var out = _cmdOut;
+        return out != null && action.equals(out["action"]) && out["id"] != null;
+    }
+
+    // The command in flight is done with, answered or refused.
+    private function dropCommand() as Void {
+        var out = _cmdOut;
+        _cmdOut = null;
+        if (out != null && _commands.size() > 0 && _commands[0] == out) {
+            _commands = _commands.slice(1, null) as Array<Dictionary<String, Object>>;
+        }
+        if (out != null && "press".equals(out["action"]) && out["id"] != null) {
+            _pressOut = false;
+        } else if (out != null && "turn".equals(out["action"])) {
+            _syncOut = false;
+        } else if (out != null && "drop".equals(out["action"])) {
+            _dropOut = null;
+        }
+    }
+
+    // The server stored the part in flight. The answer names the next one it needs; a number that
+    // does not move the turn on means the two disagree, and the server is asked.
+    private function partStored(data as Dictionary or String or ByteArray or Null) as Void {
+        var turn = _kept;
+        var ended = _bodyEnd;
+        _bodyEnd = 0;
+        _body = null;
+        if (turn == null) {
+            return;
+        }
+        var sent = Kept.num(turn, "sent");
+        var count = Outcome.number(data instanceof Dictionary ? data["next_seq"] as Object? : null);
+        var next = count != null ? count : sent + 1;
+        if (next <= sent) {
+            _endPress = 0;
+            _sync = true;
+            return;
+        }
+        Kept.confirm(turn, next);
+        caughtUp(turn);
+        if (ended > 0 && data != null) {
+            // the press rode on this request
+            pressAnswered(data);
+        } else if (ended > 0) {
+            _endPress = 0;
+        }
+    }
+
+    // The turn holds more than the server takes: it ends with what the server has, as his press
+    // would end it.
+    private function capTurn() as Void {
+        var turn = _kept;
+        if (turn == null) {
+            return;
+        }
+        Trace.add("turn_capped", {"id" => turn["id"] as String, "sent" => Kept.num(turn, "sent"), "parts" => Kept.num(turn, "parts")});
+        setNotice("Turn too long");
+        if (recording) {
+            endTurn();
+        }
+        _chunks = [];
+        _chunkBytes = 0;
+        _body = null;
+        _bodyEnd = 0;
+        Kept.clear(turn);
     }
 
     private function succeeded(lane as Number, code as Number, data as Dictionary or String or ByteArray or Null) as Boolean {
@@ -1469,26 +1993,25 @@ class CallClient {
         } else if (lane == EVENTS) {
             return handleEvents(data);
         } else if (lane == CMD) {
-            if (_commands.size() > 0) {
-                _commands = _commands.slice(1, null) as Array<Dictionary<String, Object>>;
-            }
-            if (_turnSent) {
+            var out = _cmdOut;
+            var action = out != null ? out["action"] as Object? : null;
+            var id = out != null ? out["id"] as Object? : null;
+            dropCommand();
+            if ("turn".equals(action)) {
+                synced(data);
+            } else if ("drop".equals(action)) {
+                var dropped = id instanceof String ? Kept.find(id) : null;
+                if (dropped != null) {
+                    Kept.forget(dropped);
+                }
+            } else if ("press".equals(action) && id != null) {
+                pressAnswered(data);
+            } else if (_turnSent) {
                 pressTaken();
             }
             _failStreak = 0;
         } else if (lane == AUDIO) {
-            var ended = _bodyEnd;
-            _bodyEnd = 0;
-            keepSent();
-            _seq += 1;
-            _conflicts = 0;
-            if (ended > 0) {
-                // the press rode on this request: the turn is sent
-                _endPending = false;
-                _turnSent = true;
-                _turnSentPoll = -1;
-                pressTaken();
-            }
+            partStored(data instanceof Dictionary ? data : {});
         } else if (lane == PIECE) {
             if (data instanceof ByteArray && _fetchN >= 0 && (_fetchSpec || _pieces.size() > 0)) {
                 var n = _fetchN;
@@ -1533,22 +2056,6 @@ class CallClient {
         return true;
     }
 
-    // The acknowledged body stays available for a resend, within the buffer's bound.
-    private function keepSent() as Void {
-        var body = _body;
-        _body = null;
-        if (body == null) {
-            return;
-        }
-        _sentBodies.add(body);
-        _sentBytes += body.size();
-        while (_sentBytes > BUFFER_MAX && _sentBodies.size() > 0) {
-            _sentBytes -= _sentBodies[0].size();
-            _sentBodies = _sentBodies.slice(1, null) as Array<ByteArray>;
-            _sentBase += 1;
-        }
-    }
-
     private function nextPiece() as Void {
         _pieceTries = 0;
         if (_pieces.size() > 0) {
@@ -1564,7 +2071,7 @@ class CallClient {
         }
         l.failures += 1;
         l.notBefore = _env.now() + CallLogic.backoff(l.failures);
-        if (lane == OPEN && _call == null && !_closing && l.failures >= OPEN_TRIES) {
+        if (lane == OPEN && _call == null && !_closing && l.failures >= OPEN_TRIES && _kept == null) {
             stopForGood("Cannot connect (" + codeText(code) + ")", true);
             return;
         }
@@ -1605,15 +2112,15 @@ class CallClient {
     }
 
     // The open found no phone link: it asks again soon, without counting a failure, until the link
-    // is back or PHONE_WAIT_MS have passed. The turn keeps recording meanwhile. False once the wait
-    // is over, which gives the call up.
+    // is back. The turn keeps recording meanwhile, and while a turn of his is open the wait has no
+    // end; with none, it is over after PHONE_WAIT_MS (false), which gives the call up.
     private function waitForPhone() as Boolean {
         var now = _env.now();
         if (_noPhoneSince < 0) {
             _noPhoneSince = now;
             Trace.add("no_phone", {});
         }
-        if (now - _noPhoneSince >= PHONE_WAIT_MS) {
+        if (now - _noPhoneSince >= PHONE_WAIT_MS && _kept == null) {
             return false;
         }
         _lanes[OPEN].notBefore = now + PHONE_POLL_MS;
@@ -1636,11 +2143,27 @@ class CallClient {
 
     // A request the server will never take is not tried again.
     private function drop(lane as Number) as Void {
-        if (lane == CMD && _commands.size() > 0) {
-            _commands = _commands.slice(1, null) as Array<Dictionary<String, Object>>;
-            _turnSent = false;
+        if (lane == CMD) {
+            var out = _cmdOut;
+            var action = out != null ? out["action"] as Object? : null;
+            var id = out != null ? out["id"] as Object? : null;
+            dropCommand();
+            if ("turn".equals(action)) {
+                // a server that knows no kept turns: the turn goes from where the watch has it
+                _sync = false;
+            } else if ("drop".equals(action)) {
+                var dropped = id instanceof String ? Kept.find(id) : null;
+                if (dropped != null) {
+                    Kept.forget(dropped);
+                }
+            } else if ("press".equals(action) && id != null) {
+                refusedTurn();
+            } else {
+                _turnSent = false;
+            }
         } else if (lane == AUDIO) {
-            abandonTurn("Lost audio, try again", "Server refuses the audio");
+            _body = null;
+            refusedTurn();
         } else if (lane == LOG) {
             Trace.confirm(_logSent);
         } else if (lane == PIECE && _fetchSpec) {
@@ -1652,72 +2175,27 @@ class CallClient {
         }
     }
 
-    private function conflict(data as Dictionary or String or ByteArray or Null) as Void {
-        var field = data instanceof Dictionary ? data["next_seq"] as Object? : null;
-        // an error answer may reach the watch without its body: then everything still held goes again
-        // from the oldest chunk, which the server skips where it has it
-        var seq = Outcome.number(field);
-        var next = seq != null ? seq : _sentBase;
-        // the press goes again with the last audio, or as a command, under the same number
-        _bodyEnd = 0;
-        _conflicts += 1;
-        if (_conflicts > MAX_CONFLICTS) {
-            abandonTurn("Lost audio, try again", "Audio lost on the link");
-            return;
+    // The server refuses the turn for a reason the watch does not know: it stays on the watch,
+    // and he says whether it is tried again or dropped.
+    private function refusedTurn() as Void {
+        if (recording || _captureOpen) {
+            var turn = _kept;
+            if (turn != null) {
+                turn["ms"] = spokenMs();
+            }
+            recording = false;
+            stopMic();
+            _captureOpen = false;
         }
-        var verdict = CallLogic.afterConflict(_seq, next, _sentBase);
-        Trace.add("seq_conflict", {"sent" => _seq, "expected" => next, "verdict" => verdict, "body" => seq != null});
-        if (verdict.equals("acked")) {
-            if (next == _seq + 1) {
-                keepSent();
-            } else {
-                // the server is further ahead than this chunk: what was kept no longer lines up
-                _body = null;
-                _sentBodies = [];
-                _sentBytes = 0;
-                _sentBase = next;
-            }
-            _seq = next;
-        } else if (verdict.equals("rewind")) {
-            // the server misses chunks the watch still holds: they go again from the one it expects
-            _resend = _sentBodies.slice(next - _sentBase, null) as Array<ByteArray>;
-            var held = _body;
-            if (held != null) {
-                _resend.add(held);
-            }
-            _sentBodies = _sentBodies.slice(0, next - _sentBase) as Array<ByteArray>;
-            _sentBytes = 0;
-            for (var i = 0; i < _sentBodies.size(); i++) {
-                _sentBytes += _sentBodies[i].size();
-            }
-            _body = null;
-            _seq = next;
-        } else {
-            abandonTurn("Lost audio, try again", "Audio lost on the link");
-        }
+        cutParts(true);
+        setNotice("Server refuses the turn");
+        ask("turn_refused");
     }
 
     // A short message on the screen.
     private function setNotice(text as String) as Void {
         notice = text;
         _noticeUntil = _env.now() + NOTICE_MS;
-    }
-
-    // The turn cannot be completed: it is dropped without a press and the next one starts by itself.
-    // A cause counts the failure; a few in a row stop the recording until Start is pressed.
-    private function abandonTurn(text as String, cause as String?) as Void {
-        Trace.add("turn_abandoned", {"turn" => _turn, "cause" => cause});
-        recording = false;
-        if (_captureOpen) {
-            stopMic();
-        }
-        _captureOpen = false;
-        discardTurn();
-        setNotice(text);
-        _turnSent = false;
-        if (cause != null) {
-            recordFailed(cause);
-        }
     }
 
     // The call cannot go on: the microphone and the player stop, the error cue sounds and the reason
@@ -1729,8 +2207,7 @@ class CallClient {
         } else {
             fatal = reason;
         }
-        stopCapture();
-        discardTurn();
+        leaveTurn("stopped");
         _io.stopPlayback.invoke();
         _io.cue.invoke(CallLogic.CUE_ERROR);
         changed();
@@ -1855,9 +2332,8 @@ class CallClient {
             // recorded or fetched, what the player holds finishes, then the bye and the hang-up
             Trace.add("ended", {"reason" => e["ended"]});
             _ending = true;
-            stopCapture();
-            discardTurn();
-            _commands = [];
+            leaveTurn("ended");
+            clearCommands();
             _pieces = [];
             _expectPiece = false;
             if (!_io.busy.invoke()) {
@@ -1865,6 +2341,14 @@ class CallClient {
             }
         } else if (e["heard"] instanceof String) {
             heard = e["heard"] as String;
+        } else if (e["turn"] instanceof Dictionary) {
+            // where a kept turn stands, once the server has turned it into text
+            var t = e["turn"] as Dictionary<String, Object>;
+            var turn = _kept;
+            var where = t["state"] as Object?;
+            if (turn != null && (turn["id"] as String).equals(t["id"]) && where instanceof String) {
+                turnIs(where, t["error"] as Object?, "event");
+            }
         }
     }
 
@@ -1894,7 +2378,7 @@ class CallClient {
         _lossTimes = recent;
         resetCall();
         var n = recent.size();
-        if (n >= MAX_LOSSES) {
+        if (n >= MAX_LOSSES && _kept == null) {
             Trace.add("calls_lost", {"n" => n});
             stopForGood("The server keeps losing the call", true);
         } else {
@@ -1906,10 +2390,18 @@ class CallClient {
         }
     }
 
+    // The call is gone. A turn of his that is open stays, goes on being recorded, and is the first
+    // turn of the call that follows, which asks the server where it stands.
     private function resetCall() as Void {
-        stopCapture();
         _io.stopPlayback.invoke();
-        discardTurn();
+        _body = null;
+        clearCommands();
+        _sync = _kept != null;
+        if (_transcribing) {
+            // the call that was to bring the turn's answer is gone: the press goes again in the next
+            _transcribing = false;
+            _endPending = true;
+        }
         _call = null;
         _cursor = 0;
         _lastEvent = 0;
@@ -1921,7 +2413,6 @@ class CallClient {
         _playEnd = 0;
         _reported = {};
         _playedQueue = [];
-        _commands = [];
         _logHold = false;
         _press = 0;
         _afterPress = 0;
@@ -1937,7 +2428,7 @@ class CallClient {
         _expectPiece = false;
         _eventsFirst = false;
         _fetchN = -1;
-        _turn = 0;
+        _turn = _kept != null ? 1 : 0;
         _turnSent = false;
         _turnSentPoll = -1;
         engine = "";

@@ -1,3 +1,4 @@
+import Toybox.Application.Storage;
 import Toybox.Lang;
 import Toybox.Test;
 
@@ -15,8 +16,10 @@ class FakeEnv extends CallEnv {
     var audioBytes as Number = 0;
     var phone as Boolean = true;
 
+    // Every test starts with no turn kept, in memory or in storage.
     function initialize() {
         CallEnv.initialize();
+        Kit.forgetTurns();
     }
 
     function now() as Number {
@@ -281,6 +284,20 @@ class FakeIo {
 
 (:test)
 module Kit {
+function forgetTurns() as Void {
+    for (var i = 0; i < Kept.turns.size(); i++) {
+        var turn = Kept.turns[i];
+        for (var n = 0; n < Kept.num(turn, "parts"); n++) {
+            Storage.deleteValue(Kept.key(turn, n));
+        }
+    }
+    Kept.turns = [];
+    Kept.held = {};
+    Kept.onDisk = false;
+    Kept.loaded = true;
+    Storage.deleteValue(Kept.KEY);
+}
+
 function opened(env as FakeEnv, io as FakeIo) as CallClient {
     Trace.lines = [];
     Trace.dropped = 0;
@@ -563,31 +580,6 @@ function whileHeSpeaksTheEventsAreAskedOnlyNowAndThenAndWithoutAWait(logger as L
 }
 
 (:test)
-function theSentCueNeverComesWhileTheMicrophoneIsOpen(logger as Logger) as Boolean {
-    var env = new FakeEnv();
-    var io = new FakeIo();
-    var c = Kit.opened(env, io);
-    c.chunk(Kit.silence(300));
-    env.clock = 1000;
-    c.press();
-    env.clock = 1500;
-    c.tick();
-    var notYet = io.cues.indexOf(CallLogic.CUE_SENT) < 0;
-    c.captureEnded();
-    var atStop = io.cues.indexOf(CallLogic.CUE_SENT) >= 0;
-    // a capture that never says it stopped is given up on, and the cue comes then
-    var env2 = new FakeEnv();
-    var io2 = new FakeIo();
-    var c2 = Kit.opened(env2, io2);
-    c2.chunk(Kit.silence(300));
-    env2.clock = 1000;
-    c2.press();
-    env2.clock = 2600;
-    c2.tick();
-    return notYet && atStop && io2.cues.indexOf(CallLogic.CUE_SENT) >= 0;
-}
-
-(:test)
 function aPlayerThatIsStillPlayingKeepsTheClockFromEndingTheAnswer(logger as Logger) as Boolean {
     var env = new FakeEnv();
     var io = new FakeIo();
@@ -627,26 +619,6 @@ function aPieceThatCannotPlayStopsListeningWithTheErrorCueOnce(logger as Logger)
         }
     }
     return errors == 1 && c.stalled != null && !c.recording;
-}
-
-(:test)
-function afterABufferOverflowTheRestOfTheTurnIsDropped(logger as Logger) as Boolean {
-    var env = new FakeEnv();
-    var io = new FakeIo();
-    Trace.lines = [];
-    var c = new CallClient(io.io(), env);
-    io.client = c;
-    c.start();
-    c.chunk(Kit.silence(30000));
-    c.chunk(Kit.silence(30000));
-    // this one does not fit; what follows would sit behind a hole
-    c.chunk(Kit.silence(10000));
-    c.chunk(Kit.silence(100));
-    c.captureEnded();
-    c.tick();
-    env.reply("voice/call", 201, {"call" => "c1"});
-    env.settle();
-    return env.audioBytes == 60000;
 }
 
 (:test)
@@ -867,10 +839,14 @@ function inASessionsCallTheMicrophoneFollowsItsPhasesAndBackAsksForComputer(logg
     var command = env.paramsOf("/command");
     var asked = command != null && (command["action"] as String).equals("back") && (command["back"] as Number) == 1;
     env.replyOnly(200, {});
+    // the turn he left is over: the server hears that it is dropped
+    var dropped = env.paramsOf("/command");
+    var told = dropped != null && (dropped["action"] as String).equals("drop") && (dropped["id"] as Object?) instanceof String;
+    env.replyOnly(200, {"turn" => "dropped"});
     env.reply("/events", 200, {"cursor" => 4, "events" => [{"i" => 4, "state" => "recording", "owner" => "session", "session" => "Notes"}]});
     var held = io.captures == 3;
     env.reply("/events", 200, {"cursor" => 5, "events" => [{"i" => 5, "state" => "listening", "owner" => "computer", "session" => null}]});
-    return waiting && byPress && byPhase && tapped && waits && unsent && asked && held && !c.inSession() && io.captures == 4
+    return waiting && byPress && byPhase && tapped && waits && unsent && asked && told && held && !c.inSession() && io.captures == 4
         && c.recording && CallScreen.face(c).who.equals("");
 }
 
@@ -962,13 +938,13 @@ function everyPressTheWatchTakesBuzzes(logger as Logger) as Boolean {
     var env = new FakeEnv();
     var io = new FakeIo();
     var c = Kit.opened(env, io);
-    // send: the two short buzzes, once the microphone has stopped
+    // send: the two short buzzes, once the server has the turn
     c.chunk(Kit.silence(300));
     c.press();
-    var notYet = io.cues.indexOf(CallLogic.CUE_SENT) < 0;
     c.captureEnded();
-    var sent = io.cues[io.cues.size() - 1] == CallLogic.CUE_SENT;
+    var notYet = io.cues.indexOf(CallLogic.CUE_SENT) < 0;
     env.settleUntilEvents();
+    var sent = io.cues[io.cues.size() - 1] == CallLogic.CUE_SENT;
     env.reply("/events", 200, {"cursor" => 2, "events" => [{"i" => 1, "state" => "generating"}, {"i" => 2, "piece" => 0, "ms" => 1500}]});
     env.reply("/piece/0", 200, Kit.silence(4000));
     // cut: the tap at once
@@ -1084,13 +1060,14 @@ function aCallThatEndedWhileHeSpokeEndsWithTheByeAndNoNewTurn(logger as Logger) 
     var env = new FakeEnv();
     var io = new FakeIo();
     var c = Kit.opened(env, io);
-    // the server ended the call meanwhile: its audio route answers 404 before the events say why
+    // the server ended the call meanwhile: its audio route answers 404 before the events say why.
+    // The microphone goes on, and nothing more goes to the call until the events have answered
     c.chunk(Kit.silence(2500));
     var cues = io.cues.size();
     env.reply("/audio", 404, {"detail" => "ended"});
-    var held = !c.recording && io.captures == 1 && env.onlyOpen().find("/events") != null && !c.press();
+    var held = c.recording && io.captures == 1 && env.onlyOpen().find("/events") != null;
     env.reply("/events", 200, {"cursor" => 3, "events" => [{"i" => 3, "ended" => "idle"}]});
-    return held && io.captures == 1 && io.cues.size() == cues + 1 && io.cues[cues] == CallLogic.CUE_BYE && c.closed();
+    return held && !c.recording && io.captures == 1 && io.cues.size() == cues + 1 && io.cues[cues] == CallLogic.CUE_BYE && c.closed();
 }
 
 (:test)
@@ -1140,23 +1117,6 @@ function aCallWithoutItsPhoneWaitsForItAndKeepsTheTurn(logger as Logger) as Bool
     // the turn recorded while waiting goes out once the call is up
     env.settle();
     return waited && tapped && env.audioBytes == 2100;
-}
-
-(:test)
-function aPhoneThatStaysAwayEndsTheWaitAfterAMinute(logger as Logger) as Boolean {
-    var env = new FakeEnv();
-    var io = new FakeIo();
-    Trace.lines = [];
-    env.phone = false;
-    var c = new CallClient(io.io(), env);
-    io.client = c;
-    c.start();
-    c.chunk(Kit.silence(500));
-    for (var t = 0; t <= 70; t++) {
-        env.clock = t * 1000;
-        c.tick();
-    }
-    return c.stalled != null;
 }
 
 (:test)
@@ -1218,10 +1178,13 @@ function aGapAnswersNextSeqAsTheSimulatorHandsItOverAFloat(logger as Logger) as 
     var c = Kit.opened(env, io);
     c.chunk(Kit.silence(2500));
     var first = env.onlyOpen().find("seq=0") != null;
-    // the server has chunk 0 already and expects 1
-    env.replyOnly(409, {"next_seq" => 1.0});
+    // the server has chunk 0 already: the watch asks where the turn stands and goes on from there
+    env.replyOnly(409, null);
+    var command = env.paramsOf("/command");
+    var asked = command != null && (command["action"] as String).equals("turn") && (command["id"] as Object?) instanceof String;
+    env.replyOnly(200, {"turn" => "open", "next_seq" => 1.0});
     c.chunk(Kit.silence(2500));
-    return first && env.onlyOpen().find("seq=1") != null;
+    return first && asked && c.recording && env.onlyOpen().find("seq=1") != null;
 }
 
 (:test)
@@ -1247,23 +1210,4 @@ function aPieceThatNeverArrivesIsCancelledAndTheAnswerGoesOn(logger as Logger) a
     logger.debug("piece asks " + asked + ", cancels " + env.cancels + ", notice " + c.notice);
     // each request given up on was cancelled, the piece was given up after two, and the call goes on
     return asked == 2 && env.cancels == 2 && !crowded && !c.moreToPlay() && c.stalled == null;
-}
-
-(:test)
-function aLinkThatAnswersNothingStopsTheCallAndSaysSo(logger as Logger) as Boolean {
-    var env = new FakeEnv();
-    var io = new FakeIo();
-    var c = Kit.opened(env, io);
-    c.chunk(Kit.silence(300));
-    var quietUntil = -1;
-    for (var t = 250; t <= 70000; t += 250) {
-        env.clock = t;
-        c.tick();
-        if (c.stalled == null) {
-            quietUntil = t;
-        }
-    }
-    logger.debug("stalled " + c.stalled + " after " + quietUntil);
-    // no request is ever answered: after the first failure plus the grace the call stops visibly
-    return c.stalled != null && (c.stalled as String).equals("Phone link lost") && quietUntil >= 40000 && !c.recording;
 }

@@ -31,7 +31,7 @@ module Home {
         var menu = new WatchUi.Menu2({:title => "PAI"});
         Home.menu = menu;
         if (Toybox has :Audio) {
-            menu.addItem(new WatchUi.MenuItem("Computer", null, :computer, null));
+            menu.addItem(new WatchUi.MenuItem("Computer", keptLabel(), :computer, null));
         }
         menu.addItem(new WatchUi.MenuItem("Weather", null, :weather, null));
         menu.addItem(new WatchUi.MenuItem("Alarm", null, :alarm, null));
@@ -46,17 +46,31 @@ module Home {
         return count > 0 ? count + " waiting" : null;
     }
 
+    // The Computer entry's second line: a turn kept on the watch waits to be sent or dropped.
+    function keptLabel() as String? {
+        return Kept.waiting() != null ? "1 kept turn" : null;
+    }
+
     // The number of waiting recordings changed: the entry says so.
     function showWaiting(count as Number) as Void {
+        relabel(:selfreport, waitingLabel(count));
+    }
+
+    // A turn was kept or is gone: the entry says so.
+    function showKept() as Void {
+        relabel(:computer, keptLabel());
+    }
+
+    function relabel(id as Symbol, label as String?) as Void {
         var m = menu;
         if (m == null) {
             return;
         }
-        var index = m.findItemById(:selfreport);
+        var index = m.findItemById(id);
         if (index >= 0) {
             var item = m.getItem(index);
             if (item != null) {
-                item.setSubLabel(waitingLabel(count));
+                item.setSubLabel(label);
                 redraw();
             }
         }
