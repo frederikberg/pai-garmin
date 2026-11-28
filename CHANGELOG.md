@@ -4,6 +4,8 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+## [0.8.5] - 2026-11-28
+
 ### Changed
 
 - A turn spoken to Computer is kept on the watch until the server has taken it (`docs/api.md`, Kept turns; needs a server that stores turns by id). Its audio goes out in numbered parts that stay in memory, and in the watch's storage once the server is behind, until each is confirmed. A failing link, a server that is being replaced, a call the server forgot or ended, no phone: none of them stops the microphone or deletes the turn; a new call continues it where the server's copy ends, and the last line of the screen says how much the watch is keeping.
